@@ -1,0 +1,18 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <UseWPF>true</UseWPF>
+    <EnableWindowsTargeting>true</EnableWindowsTargeting>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <LangVersion>latest</LangVersion>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\JdMcBuilder.Core\JdMcBuilder.Core.csproj" />
+    <ProjectReference Include="..\JdMcBuilder.Mcp\JdMcBuilder.Mcp.csproj" />
+    <ProjectReference Include="..\JdMcBuilder.Backends\JdMcBuilder.Backends.csproj" />
+    <ProjectReference Include="..\JdMcBuilder.Execution\JdMcBuilder.Execution.csproj" />
+  </ItemGroup>
+</Project>

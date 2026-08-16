@@ -1,0 +1,46 @@
+{
+  "format": "mc-blueprint/v1",
+  "project": "campus-test-area",
+  "coordinateSystem": {
+    "origin": [0, 64, 0],
+    "north": "+z",
+    "unit": "minecraft-block"
+  },
+  "bounds": {
+    "from": [0, 64, 0],
+    "to": [15, 70, 15]
+  },
+  "phases": [
+    {
+      "id": "foundation",
+      "name": "测试地基",
+      "order": 10,
+      "operations": [
+        {
+          "id": "foundation-fill",
+          "type": "fill",
+          "from": [0, 64, 0],
+          "to": [15, 64, 15],
+          "block": "minecraft:stone"
+        }
+      ]
+    },
+    {
+      "id": "corners",
+      "name": "四角标记",
+      "order": 20,
+      "operations": [
+        {
+          "id": "corner-blocks",
+          "type": "blocks",
+          "blocks": [
+            { "pos": [0, 65, 0], "block": "minecraft:gold_block" },
+            { "pos": [15, 65, 0], "block": "minecraft:gold_block" },
+            { "pos": [0, 65, 15], "block": "minecraft:gold_block" },
+            { "pos": [15, 65, 15], "block": "minecraft:gold_block" }
+          ]
+        }
+      ]
+    }
+  ]
+}

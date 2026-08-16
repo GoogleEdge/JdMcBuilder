@@ -1,0 +1,85 @@
+name: Windows build
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-build-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  windows-build:
+    runs-on: windows-2022
+    timeout-minutes: 30
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up .NET 8
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+
+      - name: Show .NET environment
+        run: dotnet --info
+
+      - name: Restore solution for Windows x64
+        run: dotnet restore JdMcBuilder.sln --runtime win-x64
+
+      - name: Build Release solution
+        run: dotnet build JdMcBuilder.sln --configuration Release --no-restore
+
+      - name: Run tests
+        run: >-
+          dotnet test JdMcBuilder.sln
+          --configuration Release
+          --no-build
+          --no-restore
+          --logger "trx;LogFileName=tests.trx"
+          --results-directory TestResults
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results
+          path: TestResults/**/*.trx
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Publish Windows x64 application
+        run: >-
+          dotnet publish src/JdMcBuilder.App/JdMcBuilder.App.csproj
+          --configuration Release
+          --runtime win-x64
+          --self-contained true
+          --no-restore
+          --property:PublishSingleFile=true
+          --property:IncludeNativeLibrariesForSelfExtract=true
+          --property:EnableCompressionInSingleFile=true
+          --output artifacts/win-x64
+
+      - name: Verify publish output
+        shell: pwsh
+        run: |
+          $application = 'artifacts\win-x64\JdMcBuilder.App.exe'
+          if (-not (Test-Path -LiteralPath $application -PathType Leaf)) {
+            throw "Expected publish executable is missing: $application"
+          }
+          if ((Get-Item -LiteralPath $application).Length -le 0) {
+            throw "Publish executable is empty: $application"
+          }
+
+      - name: Upload Windows x64 application
+        uses: actions/upload-artifact@v4
+        with:
+          name: JdMcBuilder-win-x64
+          path: artifacts/win-x64
+          if-no-files-found: error
+          retention-days: 14
