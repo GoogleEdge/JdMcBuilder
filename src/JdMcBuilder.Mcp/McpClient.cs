@@ -98,7 +98,7 @@ public sealed class McpClient : IMcpToolInvoker, IAsyncDisposable
             return;
         }
 
-        foreach (var tool in tools.Value.EnumerateArray())
+        foreach (var tool in tools.EnumerateArray())
         {
             if (!tool.TryGetProperty("name", out var nameElement) || nameElement.ValueKind != JsonValueKind.String)
             {

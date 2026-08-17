@@ -185,7 +185,7 @@ public sealed class HttpMcpTransport : IMcpTransport
 
         if (contentType?.Contains("text/event-stream", StringComparison.OrdinalIgnoreCase) == true || body.Contains("data:", StringComparison.Ordinal))
         {
-            foreach (var line in body.Split('\n').Reverse())
+            foreach (var line in System.Linq.Enumerable.Reverse(body.Split('\n')))
             {
                 var data = line.Trim();
                 if (!data.StartsWith("data:", StringComparison.OrdinalIgnoreCase))
