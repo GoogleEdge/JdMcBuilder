@@ -1,0 +1,60 @@
+{
+  "format": "mc-blueprint/v1",
+  "project": "conceptual-campus-template-not-measured",
+  "coordinateSystem": {
+    "origin": [0, 64, 0],
+    "north": "+z",
+    "unit": "minecraft-block"
+  },
+  "bounds": {
+    "from": [0, 64, 0],
+    "to": [23, 68, 19]
+  },
+  "phases": [
+    {
+      "id": "foundation",
+      "name": "Conceptual foundation (template only)",
+      "order": 10,
+      "operations": [
+        {
+          "id": "foundation-pad",
+          "type": "fill",
+          "from": [2, 64, 2],
+          "to": [21, 64, 16],
+          "block": "minecraft:stone"
+        }
+      ]
+    },
+    {
+      "id": "main-mass",
+      "name": "Conceptual main mass (template only)",
+      "order": 20,
+      "operations": [
+        {
+          "id": "main-wall-volume",
+          "type": "fill",
+          "from": [4, 65, 4],
+          "to": [19, 67, 14],
+          "block": "minecraft:stone_bricks"
+        }
+      ]
+    },
+    {
+      "id": "openings",
+      "name": "Sparse conceptual details (template only)",
+      "order": 30,
+      "operations": [
+        {
+          "id": "front-details",
+          "type": "blocks",
+          "blocks": [
+            { "pos": [11, 65, 3], "block": "minecraft:glass" },
+            { "pos": [12, 65, 3], "block": "minecraft:glass" },
+            { "pos": [11, 66, 3], "block": "minecraft:glass" },
+            { "pos": [12, 66, 3], "block": "minecraft:glass" }
+          ]
+        }
+      ]
+    }
+  ]
+}
