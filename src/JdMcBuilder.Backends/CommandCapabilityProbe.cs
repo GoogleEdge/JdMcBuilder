@@ -490,20 +490,21 @@ public sealed class CommandCapabilityProbe
             throw new ArgumentException("三个探针区域/点必须互不重叠，以便独立验证。", nameof(request));
         }
 
-        if (request.VerificationValidity is { } validity
-            && validity <= TimeSpan.Zero)
+        if (request.VerificationValidity is { } validity)
         {
-            throw new ArgumentOutOfRangeException(
-                nameof(request.VerificationValidity),
-                "验证有效期必须大于零。 ");
-        }
+            if (validity <= TimeSpan.Zero)
+            {
+                throw new ArgumentOutOfRangeException(
+                    nameof(request.VerificationValidity),
+                    "验证有效期必须大于零。 ");
+            }
 
-        if (request.VerificationValidity is { } validity
-            && validity > TimeSpan.FromDays(1))
-        {
-            throw new ArgumentOutOfRangeException(
-                nameof(request.VerificationValidity),
-                "验证有效期不能超过一天。 ");
+            if (validity > TimeSpan.FromDays(1))
+            {
+                throw new ArgumentOutOfRangeException(
+                    nameof(request.VerificationValidity),
+                    "验证有效期不能超过一天。 ");
+            }
         }
     }
 
