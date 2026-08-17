@@ -2,7 +2,7 @@
 
 JdMcBuilder is a Windows desktop application for applying a reviewed Minecraft campus blueprint through an MCC MCP server. The application reads coordinates and block types from `mc-blueprint/v1` JSON or JSONL, validates the file, plans bounded batches, and sends the resulting operations directly to Minecraft. Claude, an Anthropic API, or another language model is **not** involved in deciding or sending individual blocks during construction.
 
-> **Important:** This repository contains the application and an optional image-to-blueprint instruction skill. It does not currently perform automatic, measured image recognition inside the WPF application. A generated blueprint is always an input that must be reviewed and Dry Run before any world write.
+> **Important:** This repository contains the application and a packaged image-to-blueprint skill ZIP. The skill source is not part of the repository tree and is not invoked by the application. The WPF app does not currently perform automatic, measured image recognition. A generated blueprint is always an input that must be reviewed and Dry Run before any world write.
 
 ## Supported environment
 
@@ -128,7 +128,7 @@ The parser and validator details are documented in [`SPEC.md`](SPEC.md) and [`sr
 
 ## Converting a campus image
 
-The optional [`minecraft-image-to-blueprint` skill](.claude/skills/minecraft-image-to-blueprint/SKILL.md) is an instruction package for a future AI-assisted, human-reviewed conversion. It is **not** an image-recognition feature in the WPF app, and creating this package does not invoke it.
+The optional `minecraft-image-to-blueprint` skill is distributed only as [`dist/minecraft-image-to-blueprint-skill.zip`](dist/minecraft-image-to-blueprint-skill.zip). It is an instruction package for a future AI-assisted, human-reviewed conversion, not an image-recognition feature in the WPF app. The application does not invoke it.
 
 The supplied reference image is:
 
