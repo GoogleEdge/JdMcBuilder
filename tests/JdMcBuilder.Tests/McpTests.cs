@@ -1,4 +1,6 @@
 using System.Text.Json;
+using JdMcBuilder.Backends;
+using JdMcBuilder.Core.Blueprint;
 using JdMcBuilder.Mcp;
 
 namespace JdMcBuilder.Tests;
@@ -20,14 +22,18 @@ public sealed class McpTests
             return Task.FromResult(new McpToolResult([], false));
         });
         var client = new MccToolClient(fake);
+        var command = new CommandSafety().BuildWorldEditSelectionFirst(
+            new BlockPosition(0, 64, 0));
 
-        await client.SendChatAsync("//pos1 0 64 0");
+        await client.SendChatAsync(command);
         await client.SessionStatusAsync();
 
         Assert.Equal(2, calls.Count);
         Assert.Equal("mcc_send_chat", calls[0].Name);
-        Assert.Contains("pos1", calls[0].Arguments!.ToString(), StringComparison.Ordinal);
+        var chatArguments = JsonSerializer.SerializeToElement(calls[0].Arguments);
+        Assert.Equal("/pos1 0 64 0", chatArguments.GetProperty("text").GetString());
     }
+
 
     [Fact]
     public void CapabilityDetectorRequiresVerificationTools()

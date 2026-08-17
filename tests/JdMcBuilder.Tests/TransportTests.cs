@@ -1,12 +1,76 @@
 using System.Net;
 using System.Net.Http;
 using System.Text;
+using System.Text.Json;
 using JdMcBuilder.Mcp;
 
 namespace JdMcBuilder.Tests;
 
 public sealed class TransportTests
 {
+    [Fact]
+    public async Task McpClientSerializesWorldEditChatTextUnchanged()
+    {
+        string? toolCallRequestBody = null;
+        var handler = new StubHandler(request =>
+        {
+            var requestBody = request.Content!.ReadAsStringAsync().GetAwaiter().GetResult();
+            using var document = JsonDocument.Parse(requestBody);
+            var root = document.RootElement;
+            var method = root.GetProperty("method").GetString();
+            var responseId = root.TryGetProperty("id", out var id)
+                ? id.GetRawText()
+                : null;
+            string result;
+            switch (method)
+            {
+                case "initialize":
+                    result = "{\"capabilities\":{}}";
+                    break;
+                case "notifications/initialized":
+                    return new HttpResponseMessage(HttpStatusCode.OK);
+                case "tools/list":
+                    result = "{\"tools\":[{\"name\":\"mcc_send_chat\",\"inputSchema\":{\"type\":\"object\"}}]}";
+                    break;
+                case "tools/call":
+                    toolCallRequestBody = requestBody;
+                    result = "{\"content\":[]}";
+                    break;
+                default:
+                    throw new InvalidOperationException($"意外的 MCP 请求：{method}。");
+            }
+
+            if (responseId is null)
+            {
+                throw new InvalidOperationException($"MCP 请求缺少 ID：{method}。");
+            }
+
+            var response = $"{{\"jsonrpc\":\"2.0\",\"id\":{responseId},\"result\":{result}}}";
+            return new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent(response, Encoding.UTF8, "application/json")
+            };
+        });
+        using var http = new HttpClient(handler);
+        await using var transport = new HttpMcpTransport(new McpConnectionOptions(), http);
+        await using var client = new McpClient(transport);
+        await client.ConnectAsync();
+        const string command = "/pos1 1 64 2";
+
+        await new MccToolClient(client).SendChatAsync(command);
+
+        Assert.NotNull(toolCallRequestBody);
+        using var request = JsonDocument.Parse(toolCallRequestBody!);
+        Assert.Equal("tools/call", request.RootElement.GetProperty("method").GetString());
+        Assert.Equal(
+            "/pos1 1 64 2",
+            request.RootElement
+                .GetProperty("params")
+                .GetProperty("arguments")
+                .GetProperty("text")
+                .GetString());
+    }
+
     [Fact]
     public async Task TransportRejectsMismatchedJsonRpcResponseId()
     {

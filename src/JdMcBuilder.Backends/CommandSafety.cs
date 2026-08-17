@@ -7,10 +7,13 @@ public sealed class CommandSafety
 {
     private static readonly Regex BlockId = new(@"\Aminecraft:[a-z0-9_/.-]+\z", RegexOptions.Compiled | RegexOptions.CultureInvariant);
 
-    public string BuildWorldEditSelectionFirst(BlockPosition position) => $"//pos1 {ValidatePosition(position)}";
-    public string BuildWorldEditSelectionSecond(BlockPosition position) => $"//pos2 {ValidatePosition(position)}";
-    public string BuildWorldEditSet(string block) => $"//set {ValidateBlock(block)}";
-    public string BuildWorldEditReplace(string from, string to) => $"//replace {ValidateBlock(from)} {ValidateBlock(to)}";
+    // MCC's mcc_send_chat protocol path consumes the outer Minecraft command
+    // slash before building the serverbound command packet; WorldEdit's command
+    // name therefore needs one slash here, not the two-slash player-chat form.
+    public string BuildWorldEditSelectionFirst(BlockPosition position) => $"/pos1 {ValidatePosition(position)}";
+    public string BuildWorldEditSelectionSecond(BlockPosition position) => $"/pos2 {ValidatePosition(position)}";
+    public string BuildWorldEditSet(string block) => $"/set {ValidateBlock(block)}";
+    public string BuildWorldEditReplace(string from, string to) => $"/replace {ValidateBlock(from)} {ValidateBlock(to)}";
     public string BuildNativeFill(BlockRange range, string block)
     {
         ValidateRange(range);

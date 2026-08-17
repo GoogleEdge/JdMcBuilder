@@ -198,7 +198,7 @@ JdMcBuilder.Tests             单元、契约、模拟端到端测试
 根据运行时发现的能力选择，顺序如下：
 
 1. **WorldEdit 后端**：适合大体积矩形填充和重复区域，首选高速路径。
-2. **Minecraft 原生命令后端**：若 `mcc_run_internal_command` 确实支持执行 `/fill` 等命令且权限允许，则用于矩形填充。
+2. **Minecraft 原生命令后端**：当前通过 `mcc_send_chat` 发送白名单 `/fill` 命令；仅在已单独实现和验证其受限契约后，才可把 `mcc_run_internal_command` 作为未来候选入口。
 3. **MCP 逐方块后端**：使用 `mcc_place_block`，仅用于小批量或稀疏细节；界面必须显示慢速警告。
 
 后端选择不得静默切换。每个阶段开始前显示实际后端和预计 MCP 调用数；能力变化或调用失败时暂停并要求用户选择重试、切换或取消。
@@ -218,26 +218,26 @@ JdMcBuilder.Tests             单元、契约、模拟端到端测试
 
 首版把 WorldEdit 作为一个可检测、可配置的批量后端，而不是假定所有服务器安装了相同版本。支持的核心场景：
 
-- 长方体区域填充：选中两个角点后执行 `//set <block>`；
+- 长方体区域填充：选中两个角点后执行 WorldEdit 的 `set <block>`；玩家普通聊天常用 `//set <block>`，而本应用传给 `mcc_send_chat` 的输入是 `/set <block>`；
 - 区域替换：选区内将一种方块替换为另一种方块（对应未来的 `replace` 操作）；
 - 阶段撤销：在确认版本和权限允许时使用 WorldEdit 的玩家历史撤销能力；
 - 可选 schematic 工作流：生成 `.schem` 文件并由用户/服务器侧导入，再通过 WorldEdit 粘贴。
 
 ### 7.2 WorldEdit 命令适配
 
-MCP 文档列出的 `mcc_run_internal_command` 和 `mcc_send_chat` 是候选入口，但页面没有说明它们是否能执行服务器命令、是否支持 `//` 前缀、命令结果如何返回。因此应用必须提供可配置的 `WorldEditCommandProfile`，并在连接测试中逐项验证：
+MCP 文档列出的 `mcc_run_internal_command` 和 `mcc_send_chat` 是候选入口。`mcc_send_chat` 的 `text` 是 MCC 聊天/服务器命令输入；MCC 将带一个前导 `/` 的文本转换为服务器命令包，并消费这个外层斜杠。因而玩家普通聊天中写作 `//pos1`、`//pos2`、`//set` 的 WorldEdit 命令，在本应用传给 `mcc_send_chat` 时必须使用 `/pos1`、`/pos2`、`/set`，否则额外的 `/` 会成为服务器解析的命令名字符。应用仍须在目标服务器上逐项验证实际 WorldEdit 版本和权限：
 
 ```json
 {
-  "selectionPos1": "//pos1 {x},{y},{z}",
-  "selectionPos2": "//pos2 {x},{y},{z}",
-  "set": "//set {block}",
-  "replace": "//replace {from} {to}",
-  "undo": "//undo"
+  "selectionPos1": "/pos1 {x} {y} {z}",
+  "selectionPos2": "/pos2 {x} {y} {z}",
+  "set": "/set {block}",
+  "replace": "/replace {from} {to}",
+  "undo": "/undo"
 }
 ```
 
-上述只是模板示意，不代表已确认的 MCP payload 或所有 WorldEdit 版本的最终语法。适配器必须：
+这里的单斜杠是 **MCC `mcc_send_chat` 的输入形式**；不是要求用户在 Minecraft 普通聊天中改写 WorldEdit 的常见双斜杠语法。上述模板仍不代表所有 WorldEdit 版本的权限或最终返回格式。适配器必须：
 
 1. 对坐标和 block ID 做严格参数化，不允许蓝图注入额外命令片段；
 2. 先清晰设置 pos1/pos2，再发 set/replace，避免使用玩家当前残留选区；
@@ -254,7 +254,7 @@ MCP 文档列出的 `mcc_run_internal_command` 和 `mcc_send_chat` 是候选入�
 - WorldEdit 或兼容插件名称和版本；
 - 玩家是否有选区、编辑、撤销和 schematic 权限；
 - `mcc_run_internal_command` 的准确 schema 及是否能执行 WorldEdit 命令；
-- `mcc_send_chat` 是否能发送 `//` 命令并返回成功/失败；
+- `mcc_send_chat` 是否能发送 WorldEdit 命令并返回成功/失败；通过该工具时，应用传单斜杠 `/pos1`、`/pos2`、`/set`，而不是把玩家聊天中的双斜杠原样发送；
 - 服务器是否有 WorldEdit 操作的方块数量限制、异步队列或冷却；
 - 是否允许从客户端/本机使用这些命令。
 
@@ -342,9 +342,9 @@ profile = "configurable"
 }
 ```
 
-重启后只允许从成功批次继续。对于 WorldEdit 的 `//set`，如果返回结果不确定，批次进入 `uncertain`，必须先用 `mcc_world_block_at`/扫描工具抽样或让用户重新确认，而不是自动重放。
+重启后只允许从成功批次继续。对于经 `mcc_send_chat` 发送的 WorldEdit `/set`（玩家普通聊天常写作 `//set`），如果返回结果不确定，批次进入 `uncertain`，必须先用 `mcc_world_block_at`/扫描工具抽样或让用户重新确认，而不是自动重放。
 
-WorldEdit `//undo` 仅作为可选恢复动作：必须确认同一玩家历史未被其他操作污染，且插件返回成功；应用不能宣称它拥有通用事务回滚。
+WorldEdit `//undo` 是玩家普通聊天中的可选恢复动作；若未来经 `mcc_send_chat` 实现，输入形式必须另行按 MCC 单斜杠规则验证。无论采用何种入口，都必须确认同一玩家历史未被其他操作污染，且插件返回成功；应用不能宣称它拥有通用事务回滚。
 
 ## 10. 界面需求
 
@@ -410,7 +410,7 @@ WorldEdit `//undo` 仅作为可选恢复动作：必须确认同一玩家历史�
 1. MCC 本地测试世界连接和工具发现；
 2. 1×1 或 3×3 蓝图的逐块测试；
 3. 10×10 `fill` 测试；
-4. WorldEdit 选区 + `//set` 测试；
+4. 通过 `mcc_send_chat` 进行 WorldEdit 选区 + `/set` 测试（玩家普通聊天中的等价写法为 `//set`）；
 5. 故意断开连接，验证断点恢复；
 6. 越界蓝图，确认被阻止；
 7. 一个教学楼/运动场分区；
@@ -436,7 +436,7 @@ WorldEdit `//undo` 仅作为可选恢复动作：必须确认同一玩家历史�
 1. MCP Server 的实际 endpoint、是否启用 Bearer token；
 2. 一次真实、脱敏的 MCP `initialize`/工具发现结果；
 3. `mcc_run_internal_command` 的完整 input schema，以及它是否能执行 `/fill`、WorldEdit 命令；
-4. `mcc_send_chat` 的完整 input schema，以及发送 `//` 命令时的返回格式；
+4. `mcc_send_chat` 的完整 input schema，以及发送 WorldEdit 命令（应用传 `/pos1`、`/pos2`、`/set`；玩家聊天常见写法为 `//pos1` 等）时的返回格式；
 5. `mcc_place_block` 的完整 input schema 和失败返回；
 6. Minecraft 版本、Java/Bedrock、目标维度和玩家权限；
 7. WorldEdit/兼容插件版本、权限节点、单次操作限制和是否允许 `//undo`；
@@ -540,7 +540,7 @@ WorldEdit `//undo` 仅作为可选恢复动作：必须确认同一玩家历史�
 | `mcc_use_item_on_hand` | 无 | `{}` | 使用手中物品 |
 | `mcc_animation` | `hand?`="MainHand" | `{"hand":"MainHand"}` | 手臂动画 |
 | `mcc_respawn` | 无 | `{}` | 死亡后重生 |
-| `mcc_send_chat` | `text` string 必填 | `{"text":"/fill 0 64 0 10 64 10 minecraft:stone"}` | WorldEdit/原生命令候选写入入口；必须使用生成的白名单命令 |
+| `mcc_send_chat` | `text` string 必填 | `{"text":"/fill 0 64 0 10 64 10 minecraft:stone"}` | WorldEdit/原生命令候选写入入口；必须使用生成的白名单命令。WorldEdit 的 `/pos1`、`/pos2`、`/set` 也使用单斜杠输入，因为 MCC 会消费外层命令斜杠 |
 
 ## A.8 事件、聊天与 MCC 信息
 
@@ -610,9 +610,9 @@ WorldEdit `//undo` 仅作为可选恢复动作：必须确认同一玩家历史�
 ### WorldEdit（首选，需权限测试）
 
 ```text
-mcc_send_chat({"text":"//pos1 x1 y1 z1"})
-mcc_send_chat({"text":"//pos2 x2 y2 z2"})
-mcc_send_chat({"text":"//set minecraft:stone"})
+mcc_send_chat({"text":"/pos1 x1 y1 z1"})
+mcc_send_chat({"text":"/pos2 x2 y2 z2"})
+mcc_send_chat({"text":"/set minecraft:stone"})
 mcc_world_block_at({"x":x1,"y":y1,"z":z1})
 ```
 

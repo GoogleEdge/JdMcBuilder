@@ -14,8 +14,8 @@ Windows 桌面工具：导入包含坐标和方块类型的 `mc-blueprint/v1` JS
 
 应用按以下顺序选择后端：
 
-1. WorldEdit：发送 `//pos1`、`//pos2`、`//set`，适合大范围填充；
-2. 原生 `/fill`：适合没有 WorldEdit 的矩形填充；
+1. WorldEdit：通过 `mcc_send_chat` 发送 `/pos1`、`/pos2`、`/set`，适合大范围填充；在玩家普通聊天中手动输入时通常写作 `//pos1`、`//pos2`、`//set`，但 MCC 会消费外层命令斜杠，应用不能把双斜杠原样传给该工具；
+2. 原生 `/fill`：通过 `mcc_send_chat` 发送 `/fill`，适合没有 WorldEdit 的矩形填充；
 3. `mcc_place_block`：逐块降级，只适合小规模显式方块，要求材料在玩家库存中。
 
 仅发现 `mcc_send_chat` 不代表 WorldEdit 或 `/fill` 已获得权限。能力默认是“未验证”。连接后必须在界面输入三个互不重叠的测试范围/点和探针方块，点击能力验证按钮并明确确认测试世界写入；应用会分别探测 WorldEdit、原生 `/fill` 和逐块放置。只有写入返回、观察结果和 `mcc_world_block_at` 方块 ID 比较都通过的后端，才会获得带当前目标指纹和过期时间的证明；没有证明时真实施工会在确认对话框前被阻止。
