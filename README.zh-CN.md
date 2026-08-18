@@ -14,11 +14,11 @@ Windows 桌面工具：导入包含坐标和方块类型的 `mc-blueprint/v1` JS
 
 应用按以下顺序选择后端：
 
-1. WorldEdit：在已验证的当前 MCC → Leaf → WorldEdit 部署中，通过 `mcc_send_chat` 发送一条 `///pos`，后跟两个逗号分隔的方块向量，再发送 `///set`，例如 `///pos 1,64,2 3,65,4` 和 `///set minecraft:stone`。MCC 会消费最外层一个斜杠，剩下的 `//pos ...` 和 `//set ...` 形式才能被该部署接受。当前 profile 使用 `///pos`，不是分别发送 `///pos1`、`///pos2`；这是实际错误提示所对应的 `//pos [pos1] [pos2...]` 命令形状。该形式是当前目标部署的实测适配，不代表所有 MCC、Leaf、Paper 或 WorldEdit 版本都相同。该命令形式已有离线回归测试，但仍必须在当前目标世界通过独立探针验证权限和真实写入；
+1. WorldEdit：只通过 `mcc_send_chat` 发送命令，不使用 `mcc_run_internal_command`。在已验证的当前部署中，先发送一条 `//pos`，后跟两个逗号分隔的方块向量，再发送 `//set`，例如 `//pos 1,64,1 2,64,1` 和 `//set minecraft:stone`。当前 profile 使用合并的 `//pos [pos1] [pos2...]` 形式，不是分别发送 `//pos1`、`//pos2`；该形式是当前目标服务器实际接受的命令形状，不代表所有 MCC、Leaf、Paper 或 WorldEdit 版本都相同。该命令形式已有离线回归测试，但仍必须在当前目标世界通过独立探针验证权限和真实写入；
 2. 原生 `/fill`：通过 `mcc_send_chat` 发送 `/fill`，适合没有 WorldEdit 的矩形填充；
 3. `mcc_place_block`：逐块降级，只适合小规模显式方块，要求材料在玩家库存中。
 
-仅发现 `mcc_send_chat` 不代表 WorldEdit 或 `/fill` 已获得权限。能力默认是“未验证”。连接后必须在界面输入三个互不重叠的测试范围/点和探针方块，点击能力验证按钮并明确确认测试世界写入；应用会分别探测 WorldEdit、原生 `/fill` 和逐块放置。只有写入返回、观察结果和 `mcc_world_block_at` 方块 ID 比较都通过的后端，才会获得带当前目标指纹和过期时间的证明；没有证明时真实施工会在确认对话框前被阻止。
+仅发现 `mcc_send_chat` 不代表 WorldEdit 或 `/fill` 已获得权限。能力默认是“未验证”。连接后必须在界面输入三个互不重叠的测试范围/点和探针方块，点击能力验证按钮并明确确认测试世界写入；应用会分别探测 WorldEdit、原生 `/fill` 和逐块放置。只有写入返回、观察结果和 `mcc_world_block_at` 方块 ID 比较都通过的后端，才会获得带当前目标指纹和过期时间的证明；没有证明时真实施工会在确认对话框前被阻止。WorldEdit 探针和施工命令均通过 `mcc_send_chat` 发送，不会改走 `mcc_run_internal_command`。
 
 ## 快速开始
 

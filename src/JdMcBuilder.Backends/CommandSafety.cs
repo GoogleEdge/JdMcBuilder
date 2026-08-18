@@ -7,18 +7,17 @@ public sealed class CommandSafety
 {
     private static readonly Regex BlockId = new(@"\Aminecraft:[a-z0-9_/.-]+\z", RegexOptions.Compiled | RegexOptions.CultureInvariant);
 
-    // The target MCC -> Leaf -> WorldEdit deployment has been verified with
-    // three slashes. MCC consumes one outer slash, leaving the two-slash form
-    // that this deployment accepts. WorldEdit's //pos command requires two
-    // comma-separated block-vector arguments.
+    // WorldEdit commands are sent through MCC's chat tool, not the internal
+    // command tool. The target deployment accepts the normal double-slash
+    // WorldEdit form and requires comma-separated block-vector arguments.
     public string BuildWorldEditSelection(BlockRange range)
     {
         ValidateRange(range);
-        return $"///pos {ValidatePosition(range.Min, ',')} {ValidatePosition(range.Max, ',')}";
+        return $"//pos {ValidatePosition(range.Min, ',')} {ValidatePosition(range.Max, ',')}";
     }
 
-    public string BuildWorldEditSet(string block) => $"///set {ValidateBlock(block)}";
-    public string BuildWorldEditReplace(string from, string to) => $"///replace {ValidateBlock(from)} {ValidateBlock(to)}";
+    public string BuildWorldEditSet(string block) => $"//set {ValidateBlock(block)}";
+    public string BuildWorldEditReplace(string from, string to) => $"//replace {ValidateBlock(from)} {ValidateBlock(to)}";
     public string BuildNativeFill(BlockRange range, string block)
     {
         ValidateRange(range);

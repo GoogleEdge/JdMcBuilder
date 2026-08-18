@@ -218,28 +218,28 @@ JdMcBuilder.Tests             单元、契约、模拟端到端测试
 
 首版把 WorldEdit 作为一个可检测、可配置的批量后端，而不是假定所有服务器安装了相同版本。支持的核心场景：
 
-- 长方体区域填充：选中两个角点后执行 WorldEdit 的 `set <block>`；在已验证的目标部署中，本应用通过 `mcc_send_chat` 发送 `///pos {x1},{y1},{z1} {x2},{y2},{z2}`，再发送 `///set <block>`；
+- 长方体区域填充：选中两个角点后执行 WorldEdit 的 `set <block>`；在已验证的目标部署中，本应用通过 `mcc_send_chat` 发送 `//pos {x1},{y1},{z1} {x2},{y2},{z2}`，再发送 `//set <block>`；
 - 区域替换：选区内将一种方块替换为另一种方块（对应未来的 `replace` 操作）；
 - 阶段撤销：在确认版本和权限允许时使用 WorldEdit 的玩家历史撤销能力；
 - 可选 schematic 工作流：生成 `.schem` 文件并由用户/服务器侧导入，再通过 WorldEdit 粘贴。
 
 ### 7.2 WorldEdit 命令适配
 
-MCP 文档列出的 `mcc_run_internal_command` 和 `mcc_send_chat` 是候选入口。对于当前已经实测成功的目标部署，`mcc_send_chat` 的 `text` 必须先使用一条 `///pos` 命令，后跟两个逗号分隔的方块向量，例如 `///pos 1,64,2 3,65,4`，再发送 `///set <block>`。MCC 消费最外层一个斜杠后，该 MCC → Leaf → WorldEdit 路径接受剩余的 `//pos ...` 和 `//set ...` 命令。该映射是目标环境 profile，不能推导为所有 MCC、Leaf、Paper 或 WorldEdit 版本的通用规则；应用仍须在目标服务器上逐项验证实际版本和权限：
+MCP 文档列出的 `mcc_run_internal_command` 和 `mcc_send_chat` 不是等价入口。WorldEdit 命令必须通过 `mcc_send_chat` 发送，不能改用 `mcc_run_internal_command`。对于当前已经实测成功的目标部署，`mcc_send_chat` 的 `text` 必须先使用一条 `//pos` 命令，后跟两个逗号分隔的方块向量，例如 `//pos 1,64,2 3,65,4`，再发送 `//set <block>`。当前服务器接受合并的 `//pos [pos1] [pos2...]` 形式，而不是分别发送 `//pos1`、`//pos2`。该映射是目标环境 profile，不能推导为所有 MCC、Leaf、Paper 或 WorldEdit 版本的通用规则；应用仍须在目标服务器上逐项验证实际版本和权限：
 
 ```json
 {
-  "selection": "///pos {x1},{y1},{z1} {x2},{y2},{z2}",
-  "set": "///set {block}",
-  "replace": "///replace {from} {to}",
-  "undo": "///undo"
+  "selection": "//pos {x1},{y1},{z1} {x2},{y2},{z2}",
+  "set": "//set {block}",
+  "replace": "//replace {from} {to}",
+  "undo": "//undo"
 }
 ```
 
-这里的三斜杠是 **当前 MCC `mcc_send_chat` 部署 profile 的输入形式**。MCC 只消费最外层一个斜杠，剩余的双斜杠才会被当前 MCC → Leaf → WorldEdit 路径接受。当前 `//pos` 命令要求两个逗号分隔的方块向量，错误提示明确显示其形式为 `//pos [pos1] [pos2...]`。该行为是目标环境的实测适配，不代表所有 MCC、Leaf、Paper 或 WorldEdit 版本。上述模板仍不代表所有环境的权限或最终返回格式。适配器必须：
+这里的双斜杠是 **当前 MCC `mcc_send_chat` 部署 profile 的输入形式**。WorldEdit 命令只通过 `mcc_send_chat` 发送；本应用不把它改走 `mcc_run_internal_command`。当前 `//pos` 命令要求两个逗号分隔的方块向量，错误提示明确显示其形式为 `//pos [pos1] [pos2...]`。该行为是目标环境的实测适配，不代表所有 MCC、Leaf、Paper 或 WorldEdit 版本。上述模板仍不代表所有环境的权限或最终返回格式。适配器必须：
 
 1. 对坐标和 block ID 做严格参数化，不允许蓝图注入额外命令片段；
-2. 先用一条 `///pos` 清晰设置两个角点，再发 set/replace，避免使用玩家当前残留选区；
+2. 先用一条 `//pos` 清晰设置两个角点，再发 `//set`/`//replace`，避免使用玩家当前残留选区；
 3. 每个 WorldEdit 操作保存完整选区、方块、命令模板和 MCP 返回摘要；
 4. 任何一个选区命令失败，立即停止该操作，不执行 set；
 5. WorldEdit 返回不确定或超时后，不盲目重复 set，先采样检查区域或要求用户确认；
@@ -252,8 +252,8 @@ MCP 文档列出的 `mcc_run_internal_command` 和 `mcc_send_chat` 是候选入�
 - Minecraft Java/Bedrock 版本；
 - WorldEdit 或兼容插件名称和版本；
 - 玩家是否有选区、编辑、撤销和 schematic 权限；
-- `mcc_run_internal_command` 的准确 schema 及是否能执行 WorldEdit 命令；
-- `mcc_send_chat` 是否能发送 WorldEdit 命令并返回成功/失败；在当前已验证目标部署中，应用传 `///pos x1,y1,z1 x2,y2,z2`，再传 `///set`；该形式是部署 profile，不要未经测试推广到其他环境；
+- `mcc_run_internal_command` 的准确 schema（仅用于诊断/受限内部命令，不作为 WorldEdit 施工入口）；
+- `mcc_send_chat` 是否能发送 WorldEdit 命令并返回成功/失败；在当前已验证目标部署中，应用传 `//pos x1,y1,z1 x2,y2,z2`，再传 `//set`；该形式是部署 profile，不要未经测试推广到其他环境；
 - 服务器是否有 WorldEdit 操作的方块数量限制、异步队列或冷却；
 - 是否允许从客户端/本机使用这些命令。
 
@@ -341,9 +341,9 @@ profile = "configurable"
 }
 ```
 
-重启后只允许从成功批次继续。对于经 `mcc_send_chat` 发送的 WorldEdit `///set`，如果返回结果不确定，批次进入 `uncertain`，必须先用 `mcc_world_block_at`/扫描工具抽样或让用户重新确认，而不是自动重放。
+重启后只允许从成功批次继续。对于经 `mcc_send_chat` 发送的 WorldEdit `//set`，如果返回结果不确定，批次进入 `uncertain`，必须先用 `mcc_world_block_at`/扫描工具抽样或让用户重新确认，而不是自动重放。
 
-WorldEdit `///undo` 是当前目标部署 profile 中的可选恢复动作；若未来经 `mcc_send_chat` 实现，应按当前目标验证。无论采用何种入口，都必须确认同一玩家历史未被其他操作污染，且插件返回成功；应用不能宣称它拥有通用事务回滚。
+WorldEdit `//undo` 是当前目标部署 profile 中的可选恢复动作；若未来经 `mcc_send_chat` 实现，应按当前目标验证。无论采用何种入口，都必须确认同一玩家历史未被其他操作污染，且插件返回成功；应用不能宣称它拥有通用事务回滚。
 
 ## 10. 界面需求
 
@@ -409,7 +409,7 @@ WorldEdit `///undo` 是当前目标部署 profile 中的可选恢复动作；若
 1. MCC 本地测试世界连接和工具发现；
 2. 1×1 或 3×3 蓝图的逐块测试；
 3. 10×10 `fill` 测试；
-4. 通过 `mcc_send_chat` 进行 WorldEdit `///pos x1,y1,z1 x2,y2,z2` + `///set` 测试；
+4. 通过 `mcc_send_chat` 进行 WorldEdit `//pos x1,y1,z1 x2,y2,z2` + `//set` 测试；
 5. 故意断开连接，验证断点恢复；
 6. 越界蓝图，确认被阻止；
 7. 一个教学楼/运动场分区；
@@ -435,10 +435,10 @@ WorldEdit `///undo` 是当前目标部署 profile 中的可选恢复动作；若
 1. MCP Server 的实际 endpoint、是否启用 Bearer token；
 2. 一次真实、脱敏的 MCP `initialize`/工具发现结果；
 3. `mcc_run_internal_command` 的完整 input schema，以及它是否能执行 `/fill`、WorldEdit 命令；
-4. `mcc_send_chat` 的完整 input schema，以及发送 WorldEdit 命令（当前目标部署应用传 `///pos x1,y1,z1 x2,y2,z2` 和 `///set`）时的返回格式；
+4. `mcc_send_chat` 的完整 input schema，以及发送 WorldEdit 命令（当前目标部署应用传 `//pos x1,y1,z1 x2,y2,z2` 和 `//set`）时的返回格式；
 5. `mcc_place_block` 的完整 input schema 和失败返回；
 6. Minecraft 版本、Java/Bedrock、目标维度和玩家权限；
-7. WorldEdit/兼容插件版本、权限节点、单次操作限制和是否允许当前 profile 的 `///undo`；
+7. WorldEdit/兼容插件版本、权限节点、单次操作限制和是否允许当前 profile 的 `//undo`；
 8. 测试世界坐标范围和允许施工区域。
 
 在上述信息确认前，任何“已经支持真实 WorldEdit 建造”的说法都不成立；实现必须在 UI 中显示“未验证”状态。
@@ -539,7 +539,7 @@ WorldEdit `///undo` 是当前目标部署 profile 中的可选恢复动作；若
 | `mcc_use_item_on_hand` | 无 | `{}` | 使用手中物品 |
 | `mcc_animation` | `hand?`="MainHand" | `{"hand":"MainHand"}` | 手臂动画 |
 | `mcc_respawn` | 无 | `{}` | 死亡后重生 |
-| `mcc_send_chat` | `text` string 必填 | `{"text":"/fill 0 64 0 10 64 10 minecraft:stone"}` | WorldEdit/原生命令候选写入入口；必须使用生成的白名单命令。当前目标部署的 WorldEdit 输入为 `///pos x1,y1,z1 x2,y2,z2` 和 `///set`；MCC 只消费最外层一个斜杠 |
+| `mcc_send_chat` | `text` string 必填 | `{"text":"/fill 0 64 0 10 64 10 minecraft:stone"}` | WorldEdit/原生命令候选写入入口；必须使用生成的白名单命令。当前目标部署的 WorldEdit 输入为 `//pos x1,y1,z1 x2,y2,z2` 和 `//set`；WorldEdit 命令不通过 `mcc_run_internal_command` 发送 |
 
 ## A.8 事件、聊天与 MCC 信息
 
@@ -609,8 +609,8 @@ WorldEdit `///undo` 是当前目标部署 profile 中的可选恢复动作；若
 ### WorldEdit（首选，需权限测试）
 
 ```text
-mcc_send_chat({"text":"///pos x1,y1,z1 x2,y2,z2"})
-mcc_send_chat({"text":"///set minecraft:stone"})
+mcc_send_chat({"text":"//pos x1,y1,z1 x2,y2,z2"})
+mcc_send_chat({"text":"//set minecraft:stone"})
 mcc_world_block_at({"x":x1,"y":y1,"z":z1})
 ```
 

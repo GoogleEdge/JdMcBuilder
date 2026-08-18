@@ -33,7 +33,7 @@ public sealed class McpTests
         Assert.Equal(2, calls.Count);
         Assert.Equal("mcc_send_chat", calls[0].Name);
         var chatArguments = JsonSerializer.SerializeToElement(calls[0].Arguments);
-        Assert.Equal("///pos 0,64,0 1,65,1", chatArguments.GetProperty("text").GetString());
+        Assert.Equal("//pos 0,64,0 1,65,1", chatArguments.GetProperty("text").GetString());
     }
 
 

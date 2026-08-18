@@ -55,7 +55,7 @@ public sealed class TransportTests
         await using var transport = new HttpMcpTransport(new McpConnectionOptions(), http);
         await using var client = new McpClient(transport);
         await client.ConnectAsync();
-        const string command = "///pos 1,64,2 3,65,4";
+        const string command = "//pos 1,64,2 3,65,4";
 
         await new MccToolClient(client).SendChatAsync(command);
 
@@ -63,7 +63,7 @@ public sealed class TransportTests
         using var request = JsonDocument.Parse(toolCallRequestBody!);
         Assert.Equal("tools/call", request.RootElement.GetProperty("method").GetString());
         Assert.Equal(
-            "///pos 1,64,2 3,65,4",
+            "//pos 1,64,2 3,65,4",
             request.RootElement
                 .GetProperty("params")
                 .GetProperty("arguments")
