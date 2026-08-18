@@ -114,7 +114,7 @@ public sealed class WorldEditCommandTests
                 ("mcc_chat_history", (string?)null),
                 ("mcc_world_block_at", (string?)null)
             ],
-            calls.Take(7).ToArray());
+            calls.Take(6).ToArray());
     }
 
     private static IReadOnlyDictionary<string, McpToolDefinition> ToolSet(
