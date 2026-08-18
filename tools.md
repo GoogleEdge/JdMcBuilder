@@ -84,6 +84,7 @@
   - `y` (integer, 必填)：Y 坐标
   - `z` (integer, 必填)：Z 坐标
 - **调用示例**：`mcc_world_block_at(x=100, y=64, z=-200)`
+- **成功返回（当前 MCC schema）**：返回对象包含 `x`、`y`、`z`、文本 `material`（例如 `"Stone"`）、数值 `blockId`/`blockMeta`/`stateId` 和 `properties`。施工验证应将文本 `material` 规范化为 `minecraft:stone` 等 canonical block ID；不能仅凭数值 `blockId` 推断方块名称。
 
 ### mcc_block_types_list
 - **用途**：列出已知的 MCC 方块类型名称，支持可选过滤。

@@ -614,7 +614,7 @@ mcc_send_chat({"text":"//set minecraft:stone"})
 mcc_world_block_at({"x":x1,"y":y1,"z":z1})
 ```
 
-`mcc_world_block_at` 的返回方块 ID 必须与本批次期望的 block ID 比较；仅确认读取工具调用成功不算施工验证。验证失败或无法解析方块 ID 时，批次必须标记为不确定并暂停。
+`mcc_world_block_at` 的返回方块 ID 必须与本批次期望的 block ID 比较；当前 MCC 返回对象中的文本 `material`（例如 `Stone`）会被规范化为 `minecraft:stone` 后比较，数值 `blockId`/`blockMeta` 单独不能安全推断 canonical 方块 ID。仅确认读取工具调用成功不算施工验证。验证失败或无法解析方块 ID 时，批次必须标记为不确定并暂停。
 
 ### Leaf/Paper 原生命令（次选，需权限测试）
 

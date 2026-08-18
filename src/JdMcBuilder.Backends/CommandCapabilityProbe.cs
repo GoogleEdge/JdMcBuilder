@@ -452,11 +452,17 @@ public sealed class CommandCapabilityProbe
             position.Y,
             position.Z,
             cancellationToken).ConfigureAwait(false);
-        if (!result.TryGetBlockId(out var actualBlock)
-            || !string.Equals(actualBlock, expectedBlock, StringComparison.OrdinalIgnoreCase))
+        if (!result.TryGetBlockId(out var actualBlock))
         {
             throw new BackendException(
-                $"探针方块验证不匹配：{position}，期望 {expectedBlock}，实际 {actualBlock ?? "未知"}。",
+                $"探针方块验证无法解析：{position}，期望 {expectedBlock}，mcc_world_block_at 未返回可识别的文本方块 ID。",
+                uncertain: true);
+        }
+
+        if (!string.Equals(actualBlock, expectedBlock, StringComparison.OrdinalIgnoreCase))
+        {
+            throw new BackendException(
+                $"探针方块验证不匹配：{position}，期望 {expectedBlock}，实际 {actualBlock}。",
                 uncertain: true);
         }
     }

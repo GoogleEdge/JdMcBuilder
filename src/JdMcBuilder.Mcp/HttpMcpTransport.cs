@@ -1,3 +1,4 @@
+using System.Net;
 using System.Net.Http.Headers;
 using System.Text;
 using System.Text.Json;
@@ -67,6 +68,17 @@ public sealed class HttpMcpTransport : IMcpTransport
             if (!response.IsSuccessStatusCode)
             {
                 var body = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
+                if (IsSessionExpired(response.StatusCode, body))
+                {
+                    InvalidateSession();
+                    throw new McpException(
+                        McpFailureKind.SessionExpired,
+                        "MCP session 已过期或不存在；请重新连接，不会自动重放操作。")
+                    {
+                        HttpStatusCode = (int)response.StatusCode
+                    };
+                }
+
                 throw new McpException(McpFailureKind.Http, $"MCP HTTP 错误 {(int)response.StatusCode}：{Truncate(body)}")
                 {
                     HttpStatusCode = (int)response.StatusCode
@@ -112,6 +124,17 @@ public sealed class HttpMcpTransport : IMcpTransport
             if (!response.IsSuccessStatusCode)
             {
                 var body = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
+                if (IsSessionExpired(response.StatusCode, body))
+                {
+                    InvalidateSession();
+                    throw new McpException(
+                        McpFailureKind.SessionExpired,
+                        "MCP session 已过期或不存在；请重新连接，不会自动重放操作。")
+                    {
+                        HttpStatusCode = (int)response.StatusCode
+                    };
+                }
+
                 throw new McpException(McpFailureKind.Http, $"MCP 通知失败：HTTP {(int)response.StatusCode}：{Truncate(body)}")
                 {
                     HttpStatusCode = (int)response.StatusCode
@@ -257,6 +280,17 @@ public sealed class HttpMcpTransport : IMcpTransport
         -32001 or -32003 => McpFailureKind.PermissionDenied,
         _ => McpFailureKind.RemoteFailure
     };
+
+    private static bool IsSessionExpired(HttpStatusCode statusCode, string body) =>
+        statusCode == HttpStatusCode.NotFound
+        && (body.Contains("session not found", StringComparison.OrdinalIgnoreCase)
+            || body.Contains("session_not_found", StringComparison.OrdinalIgnoreCase));
+
+    private void InvalidateSession()
+    {
+        SessionId = null;
+        _connected = false;
+    }
 
     private static string Truncate(string value) => value.Length <= 500 ? value : value[..500] + "…";
 

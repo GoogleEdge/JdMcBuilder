@@ -96,6 +96,59 @@ public sealed class McpTests
     }
 
     [Fact]
+    public void ToolResultExtractsMccWorldBlockMaterial()
+    {
+        var result = new McpToolResult(
+            [],
+            false,
+            JsonSerializer.SerializeToElement(
+                new
+                {
+                    success = true,
+                    data = new
+                    {
+                        x = 1,
+                        y = 64,
+                        z = 1,
+                        material = "Stone",
+                        blockId = 1,
+                        blockMeta = 0,
+                        stateId = 1,
+                        properties = new { }
+                    }
+                }));
+
+        Assert.True(result.TryGetBlockId(out var block));
+        Assert.Equal("minecraft:stone", block);
+    }
+
+    [Fact]
+    public void ToolResultExtractsMaterialFromJsonTextContent()
+    {
+        var result = new McpToolResult(
+            [JsonSerializer.SerializeToElement(new
+            {
+                type = "text",
+                text = "{\"material\":\"Stone\",\"blockId\":1}"
+            })],
+            false);
+
+        Assert.True(result.TryGetBlockId(out var block));
+        Assert.Equal("minecraft:stone", block);
+    }
+
+    [Fact]
+    public void ToolResultDoesNotInferCanonicalIdFromNumericMetadata()
+    {
+        var result = new McpToolResult(
+            [],
+            false,
+            JsonSerializer.SerializeToElement(new { blockId = 1, blockMeta = 0 }));
+
+        Assert.False(result.TryGetBlockId(out _));
+    }
+
+    [Fact]
     public void ToolResultExtractsHeldItemId()
     {
         var result = new McpToolResult(

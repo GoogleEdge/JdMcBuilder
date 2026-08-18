@@ -30,7 +30,17 @@ public sealed class ProbeTests
                 "mcc_world_state" => Result(new { worldName = "probe", dimension = "minecraft:overworld" }),
                 "mcc_server_info" => Result(new { version = "Leaf 1.21.11" }),
                 "mcc_player_stats" => Result(new { mainHand = "Stone" }),
-                "mcc_world_block_at" => Result(new { block = "minecraft:stone" }),
+                "mcc_world_block_at" => Result(new
+                {
+                    x = 10,
+                    y = 64,
+                    z = 10,
+                    material = "Stone",
+                    blockId = 1,
+                    blockMeta = 0,
+                    stateId = 1,
+                    properties = new { }
+                }),
                 _ => Result(new { success = true })
             });
         });
@@ -51,6 +61,37 @@ public sealed class ProbeTests
         });
         Assert.Contains("mcc_send_chat", calls);
         Assert.Contains("mcc_place_block", calls);
+    }
+
+    [Fact]
+    public async Task ProbeDoesNotCreateProofWhenBlockResponseIsUnrecognized()
+    {
+        var tools = ToolSet(
+            "mcc_session_status",
+            "mcc_world_state",
+            "mcc_send_chat",
+            "mcc_chat_history",
+            "mcc_world_block_at");
+        var fake = new FakeMcpToolInvoker(tools, (name, _, _) => Task.FromResult(name switch
+        {
+            "mcc_session_status" => Result(new { sessionId = "s1" }),
+            "mcc_world_state" => Result(new { dimension = "overworld" }),
+            "mcc_world_block_at" => Result(new { blockId = 1, blockMeta = 0 }),
+            _ => Result(new { success = true })
+        }));
+        var probe = new CommandCapabilityProbe(new MccToolClient(fake));
+
+        var report = await probe.ProbeApprovedAsync(new BackendProbeRequest(
+            new BlockRange(new BlockPosition(10, 64, 10), new BlockPosition(10, 64, 10)),
+            new BlockRange(new BlockPosition(20, 64, 20), new BlockPosition(20, 64, 20)),
+            new BlockPosition(30, 64, 30)));
+        var worldEdit = report.Find("worldedit")!;
+
+        Assert.Equal(BackendStatus.Unverified, worldEdit.Status);
+        Assert.Null(worldEdit.Verification);
+        Assert.True(worldEdit.WriteMayHaveBeenDispatched);
+        Assert.Contains("无法解析", worldEdit.Reason, StringComparison.Ordinal);
+        Assert.DoesNotContain("实际 。", worldEdit.Reason, StringComparison.Ordinal);
     }
 
     [Fact]

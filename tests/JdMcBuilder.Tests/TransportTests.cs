@@ -72,6 +72,119 @@ public sealed class TransportTests
     }
 
     [Fact]
+    public async Task McpClientPreservesDirectMccWorldBlockResult()
+    {
+        var handler = new StubHandler(request =>
+        {
+            var requestBody = request.Content!.ReadAsStringAsync().GetAwaiter().GetResult();
+            using var document = JsonDocument.Parse(requestBody);
+            var root = document.RootElement;
+            var method = root.GetProperty("method").GetString();
+            var responseId = root.TryGetProperty("id", out var id)
+                ? id.GetRawText()
+                : null;
+            if (method == "notifications/initialized")
+            {
+                return new HttpResponseMessage(HttpStatusCode.OK);
+            }
+
+            if (responseId is null)
+            {
+                throw new InvalidOperationException($"MCP 请求缺少 ID：{method}。");
+            }
+
+            var result = method switch
+            {
+                "initialize" => "{\"capabilities\":{}}",
+                "tools/list" => "{\"tools\":[{\"name\":\"mcc_world_block_at\",\"inputSchema\":{\"type\":\"object\"}}]}",
+                "tools/call" => "{\"success\":true,\"data\":{\"x\":1,\"y\":64,\"z\":1,\"material\":\"Stone\",\"blockId\":1,\"blockMeta\":0,\"stateId\":1,\"properties\":{}}}",
+                _ => throw new InvalidOperationException($"意外的 MCP 请求：{method}。")
+            };
+
+            var response = $"{{\"jsonrpc\":\"2.0\",\"id\":{responseId},\"result\":{result}}}";
+            return new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent(response, Encoding.UTF8, "application/json")
+            };
+        });
+        using var http = new HttpClient(handler);
+        await using var transport = new HttpMcpTransport(new McpConnectionOptions(), http);
+        await using var client = new McpClient(transport);
+        await client.ConnectAsync();
+
+        var result = await new MccToolClient(client).WorldBlockAtAsync(1, 64, 1);
+
+        Assert.True(result.TryGetBlockId(out var block));
+        Assert.Equal("minecraft:stone", block);
+    }
+
+    [Fact]
+    public async Task SessionNotFoundInvalidatesClientWithoutRetryingToolCall()
+    {
+        var toolCallCount = 0;
+        var handler = new StubHandler(request =>
+        {
+            var requestBody = request.Content!.ReadAsStringAsync().GetAwaiter().GetResult();
+            using var document = JsonDocument.Parse(requestBody);
+            var root = document.RootElement;
+            var method = root.GetProperty("method").GetString();
+            var responseId = root.TryGetProperty("id", out var id)
+                ? id.GetRawText()
+                : null;
+            if (method == "notifications/initialized")
+            {
+                return new HttpResponseMessage(HttpStatusCode.OK);
+            }
+
+            if (method == "tools/call")
+            {
+                toolCallCount++;
+                return new HttpResponseMessage(HttpStatusCode.NotFound)
+                {
+                    Content = new StringContent(
+                        "{\"error\":{\"code\":-32001,\"message\":\"Session not found\"}}",
+                        Encoding.UTF8,
+                        "application/json")
+                };
+            }
+
+            if (responseId is null)
+            {
+                throw new InvalidOperationException($"MCP 请求缺少 ID：{method}。");
+            }
+
+            var result = method switch
+            {
+                "initialize" => "{\"capabilities\":{}}",
+                "tools/list" => "{\"tools\":[{\"name\":\"mcc_send_chat\",\"inputSchema\":{\"type\":\"object\"}}]}",
+                _ => throw new InvalidOperationException($"意外的 MCP 请求：{method}。")
+            };
+            var response = $"{{\"jsonrpc\":\"2.0\",\"id\":{responseId},\"result\":{result}}}";
+            return new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent(response, Encoding.UTF8, "application/json")
+            };
+        });
+        using var http = new HttpClient(handler);
+        await using var transport = new HttpMcpTransport(new McpConnectionOptions(), http);
+        await using var client = new McpClient(transport);
+        await client.ConnectAsync();
+
+        var exception = await Assert.ThrowsAsync<McpException>(() =>
+            client.CallToolAsync("mcc_send_chat", new { text = "//set minecraft:stone" }));
+
+        Assert.Equal(McpFailureKind.SessionExpired, exception.Kind);
+        Assert.Null(transport.SessionId);
+        Assert.Equal(1, toolCallCount);
+
+        var reconnectRequired = await Assert.ThrowsAsync<McpException>(() =>
+            client.CallToolAsync("mcc_send_chat", new { text = "//set minecraft:stone" }));
+
+        Assert.Equal(McpFailureKind.Protocol, reconnectRequired.Kind);
+        Assert.Equal(1, toolCallCount);
+    }
+
+    [Fact]
     public async Task TransportRejectsMismatchedJsonRpcResponseId()
     {
         var handler = new StubHandler(_ => new HttpResponseMessage(HttpStatusCode.OK)

@@ -81,7 +81,17 @@ public sealed class McpClient : IMcpToolInvoker, IAsyncDisposable
                 throw new McpException(McpFailureKind.Protocol, "MCP 客户端尚未完成 initialize。" );
             }
 
-            await RefreshToolsCoreAsync(cancellationToken).ConfigureAwait(false);
+            try
+            {
+                await RefreshToolsCoreAsync(cancellationToken).ConfigureAwait(false);
+            }
+            catch (McpException exception) when (exception.Kind == McpFailureKind.SessionExpired)
+            {
+                _initialized = false;
+                _tools.Clear();
+                ServerCapabilities = null;
+                throw;
+            }
         }
         finally
         {
@@ -133,10 +143,22 @@ public sealed class McpClient : IMcpToolInvoker, IAsyncDisposable
                 throw new McpException(McpFailureKind.ToolNotFound, $"MCP 工具不存在或尚未发现：{name}。" );
             }
 
-            var result = await _transport.SendRequestAsync(
-                "tools/call",
-                new { name, arguments = arguments ?? new { } },
-                cancellationToken).ConfigureAwait(false);
+            JsonElement? result;
+            try
+            {
+                result = await _transport.SendRequestAsync(
+                    "tools/call",
+                    new { name, arguments = arguments ?? new { } },
+                    cancellationToken).ConfigureAwait(false);
+            }
+            catch (McpException exception) when (exception.Kind == McpFailureKind.SessionExpired)
+            {
+                _initialized = false;
+                _tools.Clear();
+                ServerCapabilities = null;
+                throw;
+            }
+
             if (!result.HasValue)
             {
                 throw new McpException(McpFailureKind.Protocol, $"工具 {name} 返回空结果。" );
@@ -148,7 +170,14 @@ public sealed class McpClient : IMcpToolInvoker, IAsyncDisposable
                 : Array.Empty<JsonElement>();
             var isError = resultValue.TryGetProperty("isError", out var errorElement) && errorElement.ValueKind == JsonValueKind.True;
             var structured = resultValue.TryGetProperty("structuredContent", out var structuredElement) ? structuredElement.Clone() : (JsonElement?)null;
-            var toolResult = new McpToolResult(content, isError, structured);
+            // Keep the complete tool result as well. MCC deployments may put
+            // the success data directly under the result (for example
+            // data.material), rather than under structuredContent.
+            var toolResult = new McpToolResult(
+                content,
+                isError,
+                structured,
+                resultValue.Clone());
             if (McpToolResultInspector.ClassifyFailure(toolResult) is { } failureKind)
             {
                 throw new McpException(

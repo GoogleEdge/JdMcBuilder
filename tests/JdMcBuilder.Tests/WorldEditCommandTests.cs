@@ -88,7 +88,17 @@ public sealed class WorldEditCommandTests
             {
                 "mcc_session_status" => Result(new { sessionId = "session-1" }),
                 "mcc_world_state" => Result(new { dimension = "minecraft:overworld" }),
-                "mcc_world_block_at" => Result(new { block = "minecraft:stone" }),
+                "mcc_world_block_at" => Result(new
+                {
+                    x = 10,
+                    y = 64,
+                    z = 10,
+                    material = "Stone",
+                    blockId = 1,
+                    blockMeta = 0,
+                    stateId = 1,
+                    properties = new { }
+                }),
                 _ => Result(new { success = true })
             });
         });

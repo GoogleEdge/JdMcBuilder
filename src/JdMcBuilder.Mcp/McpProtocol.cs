@@ -24,12 +24,15 @@ public sealed record McpToolDefinition(
 public sealed record McpToolResult(
     IReadOnlyList<JsonElement> Content,
     bool IsError,
-    JsonElement? StructuredContent = null)
+    JsonElement? StructuredContent = null,
+    JsonElement? RawResult = null)
 {
     public string ToSummary()
     {
         var text = Content
-            .Where(item => item.ValueKind == JsonValueKind.Object && item.TryGetProperty("text", out _))
+            .Where(item => item.ValueKind == JsonValueKind.Object
+                && item.TryGetProperty("text", out var textElement)
+                && textElement.ValueKind == JsonValueKind.String)
             .Select(item => item.GetProperty("text").GetString())
             .Where(item => !string.IsNullOrWhiteSpace(item));
         return string.Join("\n", text);
@@ -39,24 +42,19 @@ public sealed record McpToolResult(
     {
         var content = string.Join("\n", Content.Select(item => item.ToString()));
         var structured = StructuredContent?.ToString() ?? string.Empty;
-        return string.Join("\n", new[] { ToSummary(), content, structured }
+        var raw = RawResult?.ToString() ?? string.Empty;
+        return string.Join("\n", new[] { ToSummary(), content, structured, raw }
             .Where(item => !string.IsNullOrWhiteSpace(item)));
     }
 
     public bool TryGetBlockId(out string blockId)
     {
-        foreach (var item in Content)
+        foreach (var item in EnumeratePayloads())
         {
             if (TryFindBlockId(item, out blockId))
             {
                 return true;
             }
-        }
-
-        if (StructuredContent is { } structured
-            && TryFindBlockId(structured, out blockId))
-        {
-            return true;
         }
 
         blockId = string.Empty;
@@ -73,7 +71,7 @@ public sealed record McpToolResult(
         }
 
         var names = propertyNames.ToHashSet(StringComparer.OrdinalIgnoreCase);
-        foreach (var item in Content)
+        foreach (var item in EnumeratePayloads())
         {
             if (TryFindString(item, names, out value))
             {
@@ -81,14 +79,26 @@ public sealed record McpToolResult(
             }
         }
 
-        if (StructuredContent is { } structured
-            && TryFindString(structured, names, out value))
-        {
-            return true;
-        }
-
         value = string.Empty;
         return false;
+    }
+
+    private IEnumerable<JsonElement> EnumeratePayloads()
+    {
+        foreach (var item in Content)
+        {
+            yield return item;
+        }
+
+        if (StructuredContent is { } structured)
+        {
+            yield return structured;
+        }
+
+        if (RawResult is { } raw)
+        {
+            yield return raw;
+        }
     }
 
     public bool TryGetItemId(out string itemId) =>
@@ -222,7 +232,10 @@ public sealed record McpToolResult(
         || name.Equals("blockId", StringComparison.OrdinalIgnoreCase)
         || name.Equals("block_id", StringComparison.OrdinalIgnoreCase)
         || name.Equals("blockType", StringComparison.OrdinalIgnoreCase)
-        || name.Equals("block_type", StringComparison.OrdinalIgnoreCase);
+        || name.Equals("block_type", StringComparison.OrdinalIgnoreCase)
+        // MCC's mcc_world_block_at uses the textual material name; the
+        // numeric blockId is metadata and cannot safely identify a block.
+        || name.Equals("material", StringComparison.OrdinalIgnoreCase);
 
     private static bool TryNormalizeBlockId(string? value, out string blockId)
     {
@@ -351,6 +364,7 @@ public enum McpFailureKind
     Unknown,
     Transport,
     Timeout,
+    SessionExpired,
     Http,
     Protocol,
     ToolNotFound,
