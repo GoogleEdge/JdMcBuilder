@@ -11,10 +11,10 @@ public sealed class CommandSafetyTests
         var safety = new CommandSafety();
         var range = new BlockRange(new BlockPosition(1, 64, 2), new BlockPosition(3, 65, 4));
 
-        Assert.Equal("/pos1 1 64 2", safety.BuildWorldEditSelectionFirst(range.Min));
-        Assert.Equal("/pos2 3 65 4", safety.BuildWorldEditSelectionSecond(range.Max));
-        Assert.Equal("/set minecraft:stone", safety.BuildWorldEditSet("minecraft:stone"));
-        Assert.Equal("/replace minecraft:stone minecraft:dirt", safety.BuildWorldEditReplace("minecraft:stone", "minecraft:dirt"));
+        Assert.Equal("///pos1 1 64 2", safety.BuildWorldEditSelectionFirst(range.Min));
+        Assert.Equal("///pos2 3 65 4", safety.BuildWorldEditSelectionSecond(range.Max));
+        Assert.Equal("///set minecraft:stone", safety.BuildWorldEditSet("minecraft:stone"));
+        Assert.Equal("///replace minecraft:stone minecraft:dirt", safety.BuildWorldEditReplace("minecraft:stone", "minecraft:dirt"));
         Assert.Equal("/fill 1 64 2 3 65 4 minecraft:stone", safety.BuildNativeFill(range, "minecraft:stone"));
     }
 

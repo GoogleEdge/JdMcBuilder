@@ -12,10 +12,13 @@ public sealed class WorldEditCommandTests
     {
         var tools = ToolSet("mcc_send_chat");
         var chatPayloads = new List<string>();
+        var events = new List<string>();
         var fake = new FakeMcpToolInvoker(tools, (name, arguments, _) =>
         {
             Assert.Equal("mcc_send_chat", name);
-            chatPayloads.Add(GetText(arguments));
+            var text = GetText(arguments);
+            chatPayloads.Add(text);
+            events.Add($"send:{text}");
             return Task.FromResult(Result(new { success = true }));
         });
         var sampleCalls = new List<(BlockPosition Position, string Block)>();
@@ -24,6 +27,7 @@ public sealed class WorldEditCommandTests
             (position, block, _) =>
             {
                 sampleCalls.Add((position, block));
+                events.Add($"sample:{position}:{block}");
                 return Task.CompletedTask;
             },
             BackendStatus.Available,
@@ -42,9 +46,9 @@ public sealed class WorldEditCommandTests
 
         var expectedCommands = new[]
         {
-            "/pos1 1 64 2",
-            "/pos2 3 65 4",
-            "/set minecraft:stone"
+            "///pos1 1 64 2",
+            "///pos2 3 65 4",
+            "///set minecraft:stone"
         };
 
         Assert.True(result.Succeeded);
@@ -58,6 +62,15 @@ public sealed class WorldEditCommandTests
         Assert.Equal(
             new[] { (new BlockPosition(1, 64, 2), "minecraft:stone") },
             sampleCalls.ToArray());
+        Assert.Equal(
+            new[]
+            {
+                "send:///pos1 1 64 2",
+                "send:///pos2 3 65 4",
+                "send:///set minecraft:stone",
+                "sample:1 64 2:minecraft:stone"
+            },
+            events.ToArray());
     }
 
     [Fact]
@@ -98,9 +111,9 @@ public sealed class WorldEditCommandTests
             [
                 ("mcc_session_status", (string?)null),
                 ("mcc_world_state", (string?)null),
-                ("mcc_send_chat", (string?)"/pos1 10 64 10"),
-                ("mcc_send_chat", (string?)"/pos2 11 64 10"),
-                ("mcc_send_chat", (string?)"/set minecraft:stone"),
+                ("mcc_send_chat", (string?)"///pos1 10 64 10"),
+                ("mcc_send_chat", (string?)"///pos2 11 64 10"),
+                ("mcc_send_chat", (string?)"///set minecraft:stone"),
                 ("mcc_chat_history", (string?)null),
                 ("mcc_world_block_at", (string?)null)
             ],

@@ -14,7 +14,7 @@ Windows 桌面工具：导入包含坐标和方块类型的 `mc-blueprint/v1` JS
 
 应用按以下顺序选择后端：
 
-1. WorldEdit：通过 `mcc_send_chat` 发送 `/pos1`、`/pos2`、`/set`，适合大范围填充；在玩家普通聊天中手动输入时通常写作 `//pos1`、`//pos2`、`//set`，但 MCC 会消费外层命令斜杠，应用不能把双斜杠原样传给该工具；
+1. WorldEdit：在已验证的当前 MCC → Leaf → WorldEdit 部署中，通过 `mcc_send_chat` 发送 `///pos1`、`///pos2`、`///set`，适合大范围填充。MCC 会消费最外层一个斜杠，剩下的双斜杠形式才能被该部署接受。坐标保持空格分隔，例如 `///pos1 1 64 2`，因为这是实际能力探针成功使用的完整命令形状。该形式是当前目标部署的实测适配，不代表所有 MCC、Leaf、Paper 或 WorldEdit 版本都相同。该命令形式已有离线回归测试，但仍必须在当前目标世界通过独立探针验证权限和真实写入；
 2. 原生 `/fill`：通过 `mcc_send_chat` 发送 `/fill`，适合没有 WorldEdit 的矩形填充；
 3. `mcc_place_block`：逐块降级，只适合小规模显式方块，要求材料在玩家库存中。
 

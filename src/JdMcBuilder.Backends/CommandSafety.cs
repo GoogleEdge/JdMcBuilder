@@ -7,13 +7,14 @@ public sealed class CommandSafety
 {
     private static readonly Regex BlockId = new(@"\Aminecraft:[a-z0-9_/.-]+\z", RegexOptions.Compiled | RegexOptions.CultureInvariant);
 
-    // MCC's mcc_send_chat protocol path consumes the outer Minecraft command
-    // slash before building the serverbound command packet; WorldEdit's command
-    // name therefore needs one slash here, not the two-slash player-chat form.
-    public string BuildWorldEditSelectionFirst(BlockPosition position) => $"/pos1 {ValidatePosition(position)}";
-    public string BuildWorldEditSelectionSecond(BlockPosition position) => $"/pos2 {ValidatePosition(position)}";
-    public string BuildWorldEditSet(string block) => $"/set {ValidateBlock(block)}";
-    public string BuildWorldEditReplace(string from, string to) => $"/replace {ValidateBlock(from)} {ValidateBlock(to)}";
+    // The target MCC -> Leaf -> WorldEdit deployment has been verified with
+    // three slashes. MCC consumes one outer slash, leaving the two-slash form
+    // that this deployment accepts. Keep coordinates space-separated because
+    // the live probe used this exact command shape.
+    public string BuildWorldEditSelectionFirst(BlockPosition position) => $"///pos1 {ValidatePosition(position)}";
+    public string BuildWorldEditSelectionSecond(BlockPosition position) => $"///pos2 {ValidatePosition(position)}";
+    public string BuildWorldEditSet(string block) => $"///set {ValidateBlock(block)}";
+    public string BuildWorldEditReplace(string from, string to) => $"///replace {ValidateBlock(from)} {ValidateBlock(to)}";
     public string BuildNativeFill(BlockRange range, string block)
     {
         ValidateRange(range);
@@ -54,7 +55,7 @@ public sealed class CommandSafety
         return block;
     }
 
-    private static string ValidatePosition(BlockPosition position)
+    private static string ValidatePosition(BlockPosition position, char separator = ' ')
     {
         const long maxCoordinate = 30_000_000;
         if (Math.Abs((long)position.X) > maxCoordinate
@@ -64,7 +65,7 @@ public sealed class CommandSafety
             throw new BackendException($"命令坐标超出安全上限：{position}。" );
         }
 
-        return $"{position.X} {position.Y} {position.Z}";
+        return $"{position.X}{separator}{position.Y}{separator}{position.Z}";
     }
 
     private static void ValidateRange(BlockRange range)
