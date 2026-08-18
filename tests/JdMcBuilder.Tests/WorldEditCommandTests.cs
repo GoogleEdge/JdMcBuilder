@@ -46,8 +46,7 @@ public sealed class WorldEditCommandTests
 
         var expectedCommands = new[]
         {
-            "///pos1 1 64 2",
-            "///pos2 3 65 4",
+            "///pos 1,64,2 3,65,4",
             "///set minecraft:stone"
         };
 
@@ -65,8 +64,7 @@ public sealed class WorldEditCommandTests
         Assert.Equal(
             new[]
             {
-                "send:///pos1 1 64 2",
-                "send:///pos2 3 65 4",
+                "send:///pos 1,64,2 3,65,4",
                 "send:///set minecraft:stone",
                 "sample:1 64 2:minecraft:stone"
             },
@@ -111,8 +109,7 @@ public sealed class WorldEditCommandTests
             [
                 ("mcc_session_status", (string?)null),
                 ("mcc_world_state", (string?)null),
-                ("mcc_send_chat", (string?)"///pos1 10 64 10"),
-                ("mcc_send_chat", (string?)"///pos2 11 64 10"),
+                ("mcc_send_chat", (string?)"///pos 10,64,10 11,64,10"),
                 ("mcc_send_chat", (string?)"///set minecraft:stone"),
                 ("mcc_chat_history", (string?)null),
                 ("mcc_world_block_at", (string?)null)

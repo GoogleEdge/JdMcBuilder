@@ -47,8 +47,7 @@ public sealed class WorldEditCommandBackend : IBuildBackend
         var mutationDispatched = false;
         try
         {
-            await SendAsync(_safety.BuildWorldEditSelectionFirst(fill.Range.Min), calls, cancellationToken).ConfigureAwait(false);
-            await SendAsync(_safety.BuildWorldEditSelectionSecond(fill.Range.Max), calls, cancellationToken).ConfigureAwait(false);
+            await SendAsync(_safety.BuildWorldEditSelection(fill.Range), calls, cancellationToken).ConfigureAwait(false);
             mutationDispatched = true;
             await SendAsync(_safety.BuildWorldEditSet(fill.Block), calls, cancellationToken).ConfigureAwait(false);
             await _verifySample(fill.Range.Min, fill.Block, cancellationToken).ConfigureAwait(false);

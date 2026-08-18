@@ -9,10 +9,14 @@ public sealed class CommandSafety
 
     // The target MCC -> Leaf -> WorldEdit deployment has been verified with
     // three slashes. MCC consumes one outer slash, leaving the two-slash form
-    // that this deployment accepts. Keep coordinates space-separated because
-    // the live probe used this exact command shape.
-    public string BuildWorldEditSelectionFirst(BlockPosition position) => $"///pos1 {ValidatePosition(position)}";
-    public string BuildWorldEditSelectionSecond(BlockPosition position) => $"///pos2 {ValidatePosition(position)}";
+    // that this deployment accepts. WorldEdit's //pos command requires two
+    // comma-separated block-vector arguments.
+    public string BuildWorldEditSelection(BlockRange range)
+    {
+        ValidateRange(range);
+        return $"///pos {ValidatePosition(range.Min, ',')} {ValidatePosition(range.Max, ',')}";
+    }
+
     public string BuildWorldEditSet(string block) => $"///set {ValidateBlock(block)}";
     public string BuildWorldEditReplace(string from, string to) => $"///replace {ValidateBlock(from)} {ValidateBlock(to)}";
     public string BuildNativeFill(BlockRange range, string block)

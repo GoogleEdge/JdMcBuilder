@@ -22,8 +22,10 @@ public sealed class McpTests
             return Task.FromResult(new McpToolResult([], false));
         });
         var client = new MccToolClient(fake);
-        var command = new CommandSafety().BuildWorldEditSelectionFirst(
-            new BlockPosition(0, 64, 0));
+        var command = new CommandSafety().BuildWorldEditSelection(
+            new BlockRange(
+                new BlockPosition(0, 64, 0),
+                new BlockPosition(1, 65, 1)));
 
         await client.SendChatAsync(command);
         await client.SessionStatusAsync();
@@ -31,7 +33,7 @@ public sealed class McpTests
         Assert.Equal(2, calls.Count);
         Assert.Equal("mcc_send_chat", calls[0].Name);
         var chatArguments = JsonSerializer.SerializeToElement(calls[0].Arguments);
-        Assert.Equal("///pos1 0 64 0", chatArguments.GetProperty("text").GetString());
+        Assert.Equal("///pos 0,64,0 1,65,1", chatArguments.GetProperty("text").GetString());
     }
 
 

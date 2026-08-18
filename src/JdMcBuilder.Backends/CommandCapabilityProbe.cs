@@ -238,10 +238,7 @@ public sealed class CommandCapabilityProbe
         try
         {
             await _mcc.SendChatAsync(
-                _safety.BuildWorldEditSelectionFirst(request.WorldEditRange.Min),
-                cancellationToken).ConfigureAwait(false);
-            await _mcc.SendChatAsync(
-                _safety.BuildWorldEditSelectionSecond(request.WorldEditRange.Max),
+                _safety.BuildWorldEditSelection(request.WorldEditRange),
                 cancellationToken).ConfigureAwait(false);
             mutationDispatched = true;
             await _mcc.SendChatAsync(
