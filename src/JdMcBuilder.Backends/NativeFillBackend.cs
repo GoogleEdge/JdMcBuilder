@@ -7,18 +7,20 @@ public sealed class NativeFillBackend : IBuildBackend
 {
     private readonly MccToolClient _mcc;
     private readonly CommandSafety _safety;
-    private readonly Func<BlockPosition, string, CancellationToken, Task> _verifySample;
+    private readonly NativeFillVerifier _nativeFillVerifier;
 
     public NativeFillBackend(
         MccToolClient mcc,
-        Func<BlockPosition, string, CancellationToken, Task> verifySample,
+        NativeFillVerificationOptions? nativeFillVerificationOptions = null,
         BackendStatus status = BackendStatus.Unverified,
         CommandSafety? safety = null,
         BackendVerification? verification = null)
     {
         _mcc = mcc ?? throw new ArgumentNullException(nameof(mcc));
         _safety = safety ?? new CommandSafety();
-        _verifySample = verifySample ?? throw new ArgumentNullException(nameof(verifySample));
+        _nativeFillVerifier = new NativeFillVerifier(
+            _mcc,
+            nativeFillVerificationOptions);
         Capabilities = new BackendCapabilities(
             "native-fill",
             "Minecraft /fill",
@@ -43,15 +45,26 @@ public sealed class NativeFillBackend : IBuildBackend
             throw new BackendException("原生 /fill 后端只支持 FillBatch。" );
         }
 
-        var command = _safety.BuildNativeFill(fill.Range, fill.Block);
+        var plan = NativeFillVerificationPlan.Create(
+            fill.Range,
+            fill.Block,
+            _safety);
         var mutationDispatched = false;
         try
         {
             mutationDispatched = true;
-            await _mcc.SendChatAsync(command, cancellationToken).ConfigureAwait(false);
-            await _verifySample(fill.Range.Min, fill.Block, cancellationToken).ConfigureAwait(false);
+            await _mcc.SendChatAsync(plan.Command, cancellationToken).ConfigureAwait(false);
+            var verification = await _nativeFillVerifier.VerifyAsync(
+                plan,
+                cancellationToken).ConfigureAwait(false);
 
-            return new BackendOperationResult(batch.BatchId, true, false, "Minecraft /fill 命令已发送并完成验证。", fill.BlockCount, [$"mcc_send_chat({command})"]);
+            return new BackendOperationResult(
+                batch.BatchId,
+                true,
+                false,
+                $"Minecraft /fill 命令已发送并完成独立验证。{Environment.NewLine}{verification.Diagnostic}",
+                fill.BlockCount,
+                [$"mcc_send_chat({plan.Command})"]);
         }
         catch (McpException exception)
         {

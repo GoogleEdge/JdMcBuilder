@@ -73,6 +73,21 @@ public sealed class McpTests
     }
 
     [Fact]
+    public void CapabilityDetectorDoesNotRequireChatHistory()
+    {
+        var tools = new Dictionary<string, McpToolDefinition>(StringComparer.Ordinal)
+        {
+            ["mcc_send_chat"] = Definition("mcc_send_chat"),
+            ["mcc_world_block_at"] = Definition("mcc_world_block_at")
+        };
+
+        var report = MccCapabilityDetector.Detect(tools);
+
+        Assert.Equal(CapabilityStatus.Unverified, report.Find("native-fill")!.Status);
+        Assert.Contains("不影响", report.Find("native-fill")!.Reason, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void ToolResultInspectorRejectsFalseStructuredSuccess()
     {
         var result = new McpToolResult(
@@ -135,6 +150,99 @@ public sealed class McpTests
 
         Assert.True(result.TryGetBlockId(out var block));
         Assert.Equal("minecraft:stone", block);
+    }
+
+    [Fact]
+    public void ToolResultExtractsMccSampleCoordinates()
+    {
+        var result = new McpToolResult(
+            [],
+            false,
+            JsonSerializer.SerializeToElement(new
+            {
+                success = true,
+                data = new { x = 1, y = 64, z = 3, material = "Stone" }
+            }));
+
+        Assert.True(result.TryGetBlockSample(out var block, out var position));
+        Assert.Equal("minecraft:stone", block);
+        Assert.Equal(new BlockPosition(1, 64, 3), position);
+    }
+
+    [Theory]
+    [InlineData("OakPlanks", "minecraft:oak_planks")]
+    [InlineData("RedstoneBlock", "minecraft:redstone_block")]
+    [InlineData("minecraft:OakPlanks", "minecraft:oak_planks")]
+    public void ToolResultNormalizesPascalCaseMaterials(string material, string expected)
+    {
+        var result = new McpToolResult(
+            [],
+            false,
+            JsonSerializer.SerializeToElement(new { material }));
+
+        Assert.True(result.TryGetBlockId(out var block));
+        Assert.Equal(expected, block);
+    }
+
+    [Fact]
+    public void ToolResultRejectsCoordinateLessBlockSample()
+    {
+        var result = new McpToolResult(
+            [],
+            false,
+            JsonSerializer.SerializeToElement(new { material = "Stone" }));
+
+        Assert.False(result.TryGetBlockSample(out _, out _));
+    }
+
+    [Fact]
+    public void ToolResultRejectsConflictingBlockSamples()
+    {
+        var result = new McpToolResult(
+            [],
+            false,
+            JsonSerializer.SerializeToElement(new
+            {
+                first = new { x = 1, y = 64, z = 3, material = "Stone" },
+                second = new { x = 1, y = 64, z = 3, material = "Dirt" }
+            }));
+
+        Assert.False(result.TryGetBlockSample(out _, out _));
+    }
+
+    [Fact]
+    public void ToolResultDoesNotInheritWrapperCoordinatesIntoBareContentJson()
+    {
+        var result = new McpToolResult(
+            [JsonSerializer.SerializeToElement(new
+            {
+                type = "text",
+                text = "{\"material\":\"Stone\"}"
+            })],
+            false,
+            JsonSerializer.SerializeToElement(new
+            {
+                x = 1,
+                y = 64,
+                z = 3,
+                content = new { material = "Stone" }
+            }));
+
+        Assert.False(result.TryGetBlockSample(out _, out _));
+    }
+
+    [Fact]
+    public void ToolResultInspectorRejectsFalseJsonTextEnvelope()
+    {
+        var result = new McpToolResult(
+            [JsonSerializer.SerializeToElement(new
+            {
+                type = "text",
+                text = "{\"success\":false,\"errorCode\":\"permission_denied\"}"
+            })],
+            false);
+
+        Assert.Equal(McpFailureKind.PermissionDenied, McpToolResultInspector.ClassifyFailure(result));
     }
 
     [Fact]

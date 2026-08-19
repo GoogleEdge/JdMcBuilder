@@ -139,11 +139,18 @@ public sealed class CommandCapabilityProbe
     private const long MaxProbeVolume = 4096;
     private readonly MccToolClient _mcc;
     private readonly CommandSafety _safety;
+    private readonly NativeFillVerifier _nativeFillVerifier;
 
-    public CommandCapabilityProbe(MccToolClient mcc, CommandSafety? safety = null)
+    public CommandCapabilityProbe(
+        MccToolClient mcc,
+        CommandSafety? safety = null,
+        NativeFillVerificationOptions? nativeFillVerificationOptions = null)
     {
         _mcc = mcc ?? throw new ArgumentNullException(nameof(mcc));
         _safety = safety ?? new CommandSafety();
+        _nativeFillVerifier = new NativeFillVerifier(
+            _mcc,
+            nativeFillVerificationOptions);
     }
 
     public async Task<BackendProbeReport> ProbeApprovedAsync(
@@ -229,9 +236,9 @@ public sealed class CommandCapabilityProbe
         CancellationToken cancellationToken)
     {
         const string backendId = "worldedit";
-        if (!HasAll("mcc_send_chat", "mcc_chat_history", "mcc_world_block_at"))
+        if (!HasAll("mcc_send_chat", "mcc_world_block_at"))
         {
-            return Unavailable(backendId, targetFingerprint, "缺少 WorldEdit 探测所需的写入、聊天观察或方块读取工具。");
+            return Unavailable(backendId, targetFingerprint, "缺少 WorldEdit 探测所需的写入或方块读取工具。");
         }
 
         var mutationDispatched = false;
@@ -244,10 +251,6 @@ public sealed class CommandCapabilityProbe
             await _mcc.SendChatAsync(
                 _safety.BuildWorldEditSet(request.TestBlock),
                 cancellationToken).ConfigureAwait(false);
-            await _mcc.ChatHistoryAsync(
-                maxCount: 5,
-                includeJson: true,
-                cancellationToken: cancellationToken).ConfigureAwait(false);
             await VerifyBlockAsync(
                 request.WorldEditRange.Min,
                 request.TestBlock,
@@ -295,27 +298,23 @@ public sealed class CommandCapabilityProbe
         CancellationToken cancellationToken)
     {
         const string backendId = "native-fill";
-        if (!HasAll("mcc_send_chat", "mcc_chat_history", "mcc_world_block_at"))
+        if (!HasAll("mcc_send_chat", "mcc_world_block_at"))
         {
-            return Unavailable(backendId, targetFingerprint, "缺少 /fill 探测所需的写入、聊天观察或方块读取工具。");
+            return Unavailable(backendId, targetFingerprint, "缺少 /fill 探测所需的写入或方块读取工具。");
         }
 
         var mutationDispatched = false;
         try
         {
-            var command = _safety.BuildNativeFill(
+            var plan = NativeFillVerificationPlan.Create(
                 request.NativeFillRange,
-                request.TestBlock);
-            mutationDispatched = true;
-            await _mcc.SendChatAsync(command, cancellationToken)
-                .ConfigureAwait(false);
-            await _mcc.ChatHistoryAsync(
-                maxCount: 5,
-                includeJson: true,
-                cancellationToken: cancellationToken).ConfigureAwait(false);
-            await VerifyBlockAsync(
-                request.NativeFillRange.Min,
                 request.TestBlock,
+                _safety);
+            mutationDispatched = true;
+            await _mcc.SendChatAsync(plan.Command, cancellationToken)
+                .ConfigureAwait(false);
+            var verification = await _nativeFillVerifier.VerifyAsync(
+                plan,
                 cancellationToken).ConfigureAwait(false);
 
             return Available(
@@ -324,7 +323,7 @@ public sealed class CommandCapabilityProbe
                 probedAt,
                 validity,
                 request.NativeFillRange.Min,
-                "/fill 命令返回和方块采样均通过。",
+                $"/fill 命令已发送并通过独立方块采样。{Environment.NewLine}{verification.Diagnostic}",
                 true);
         }
         catch (OperationCanceledException exception)
@@ -452,10 +451,17 @@ public sealed class CommandCapabilityProbe
             position.Y,
             position.Z,
             cancellationToken).ConfigureAwait(false);
-        if (!result.TryGetBlockId(out var actualBlock))
+        if (!result.TryGetBlockSample(out var actualBlock, out var returnedPosition))
         {
             throw new BackendException(
                 $"探针方块验证无法解析：{position}，期望 {expectedBlock}，mcc_world_block_at 未返回可识别的文本方块 ID。",
+                uncertain: true);
+        }
+
+        if (returnedPosition is { } actualPosition && actualPosition != position)
+        {
+            throw new BackendException(
+                $"探针方块验证返回坐标不匹配：请求 {position}，实际返回 {actualPosition}。",
                 uncertain: true);
         }
 

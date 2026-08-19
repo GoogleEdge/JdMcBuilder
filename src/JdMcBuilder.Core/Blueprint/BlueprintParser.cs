@@ -387,8 +387,50 @@ public static class BlueprintParser
 
     private static string NormalizeBlock(string value)
     {
-        var trimmed = value.Trim().ToLowerInvariant();
-        return trimmed.Contains(':', StringComparison.Ordinal) ? trimmed : $"minecraft:{trimmed}";
+        var trimmed = value.Trim();
+        var separator = trimmed.IndexOf(':');
+        if (separator < 0)
+        {
+            return $"minecraft:{ToMinecraftPath(trimmed)}";
+        }
+
+        var namespaceName = trimmed[..separator].ToLowerInvariant();
+        var path = ToMinecraftPath(trimmed[(separator + 1)..]);
+        return $"{namespaceName}:{path}";
+    }
+
+    private static string ToMinecraftPath(string value)
+    {
+        var builder = new System.Text.StringBuilder(value.Length + 8);
+        for (var index = 0; index < value.Length; index++)
+        {
+            var character = value[index];
+            var previous = index > 0 ? value[index - 1] : '\0';
+            var next = index + 1 < value.Length ? value[index + 1] : '\0';
+            var startsWord = index > 0
+                && char.IsUpper(character)
+                && (char.IsLower(previous)
+                    || char.IsDigit(previous)
+                    || (char.IsUpper(previous) && char.IsLower(next)));
+            if (startsWord && builder.Length > 0 && builder[^1] != '_')
+            {
+                builder.Append('_');
+            }
+
+            if (character == '_')
+            {
+                if (builder.Length > 0 && builder[^1] != '_')
+                {
+                    builder.Append('_');
+                }
+
+                continue;
+            }
+
+            builder.Append(char.ToLowerInvariant(character));
+        }
+
+        return builder.ToString();
     }
 }
 

@@ -206,7 +206,7 @@ public sealed class HttpMcpTransport : IMcpTransport
             throw new McpException(McpFailureKind.Protocol, "MCP 返回了空响应。" );
         }
 
-        if (contentType?.Contains("text/event-stream", StringComparison.OrdinalIgnoreCase) == true || body.Contains("data:", StringComparison.Ordinal))
+        if (contentType?.Contains("text/event-stream", StringComparison.OrdinalIgnoreCase) == true)
         {
             foreach (var line in System.Linq.Enumerable.Reverse(body.Split('\n')))
             {
@@ -282,9 +282,14 @@ public sealed class HttpMcpTransport : IMcpTransport
     };
 
     private static bool IsSessionExpired(HttpStatusCode statusCode, string body) =>
-        statusCode == HttpStatusCode.NotFound
-        && (body.Contains("session not found", StringComparison.OrdinalIgnoreCase)
-            || body.Contains("session_not_found", StringComparison.OrdinalIgnoreCase));
+        (statusCode is HttpStatusCode.NotFound
+            or HttpStatusCode.Unauthorized
+            or HttpStatusCode.Gone)
+        && body.Contains("session", StringComparison.OrdinalIgnoreCase)
+        && (body.Contains("not found", StringComparison.OrdinalIgnoreCase)
+            || body.Contains("not_found", StringComparison.OrdinalIgnoreCase)
+            || body.Contains("expired", StringComparison.OrdinalIgnoreCase)
+            || body.Contains("invalid", StringComparison.OrdinalIgnoreCase));
 
     private void InvalidateSession()
     {

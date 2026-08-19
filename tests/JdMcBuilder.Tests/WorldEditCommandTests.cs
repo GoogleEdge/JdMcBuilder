@@ -78,7 +78,6 @@ public sealed class WorldEditCommandTests
             "mcc_session_status",
             "mcc_world_state",
             "mcc_send_chat",
-            "mcc_chat_history",
             "mcc_world_block_at");
         var calls = new List<(string Name, string? Text)>();
         var fake = new FakeMcpToolInvoker(tools, (name, arguments, _) =>
@@ -90,9 +89,9 @@ public sealed class WorldEditCommandTests
                 "mcc_world_state" => Result(new { dimension = "minecraft:overworld" }),
                 "mcc_world_block_at" => Result(new
                 {
-                    x = 10,
-                    y = 64,
-                    z = 10,
+                    x = GetPosition(arguments).X,
+                    y = GetPosition(arguments).Y,
+                    z = GetPosition(arguments).Z,
                     material = "Stone",
                     blockId = 1,
                     blockMeta = 0,
@@ -121,10 +120,9 @@ public sealed class WorldEditCommandTests
                 ("mcc_world_state", (string?)null),
                 ("mcc_send_chat", (string?)"//pos 10,64,10 11,64,10"),
                 ("mcc_send_chat", (string?)"//set minecraft:stone"),
-                ("mcc_chat_history", (string?)null),
                 ("mcc_world_block_at", (string?)null)
             ],
-            calls.Take(6).ToArray());
+            calls.Take(5).ToArray());
     }
 
     private static IReadOnlyDictionary<string, McpToolDefinition> ToolSet(
@@ -142,6 +140,15 @@ public sealed class WorldEditCommandTests
         var element = JsonSerializer.SerializeToElement(arguments);
         return element.GetProperty("text").GetString()
             ?? throw new InvalidOperationException("mcc_send_chat 缺少 text 参数。");
+    }
+
+    private static BlockPosition GetPosition(object? arguments)
+    {
+        var element = JsonSerializer.SerializeToElement(arguments);
+        return new BlockPosition(
+            element.GetProperty("x").GetInt32(),
+            element.GetProperty("y").GetInt32(),
+            element.GetProperty("z").GetInt32());
     }
 
     private static McpToolResult Result<T>(T value) =>

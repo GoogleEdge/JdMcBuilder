@@ -215,10 +215,17 @@ public partial class MainWindow : Window
         var sampleVerifier = new Func<BlockPosition, string, CancellationToken, Task>(async (position, expectedBlock, cancellationToken) =>
         {
             var result = await mcc.WorldBlockAtAsync(position.X, position.Y, position.Z, cancellationToken);
-            if (!result.TryGetBlockId(out var actualBlock))
+            if (!result.TryGetBlockSample(out var actualBlock, out var returnedPosition))
             {
                 throw new BackendException(
                     $"施工后方块验证无法解析：{position}，期望 {expectedBlock}，mcc_world_block_at 未返回可识别的文本方块 ID。",
+                    uncertain: true);
+            }
+
+            if (returnedPosition is { } actualPosition && actualPosition != position)
+            {
+                throw new BackendException(
+                    $"施工后方块验证返回坐标不匹配：请求 {position}，实际返回 {actualPosition}。",
                     uncertain: true);
             }
 
@@ -239,8 +246,7 @@ public partial class MainWindow : Window
             verification: worldEditVerification);
         var nativeFill = new NativeFillBackend(
             mcc,
-            sampleVerifier,
-            nativeFillStatus,
+            status: nativeFillStatus,
             verification: nativeFillVerification);
         var placeBlock = new PlaceBlockBackend(
             mcc,
@@ -328,6 +334,28 @@ public partial class MainWindow : Window
             return;
         }
 
+        var probeBlock = ProbeBlockBox.Text.Trim();
+        if (string.IsNullOrWhiteSpace(probeBlock))
+        {
+            FooterStatus.Text = "探针方块不能为空。";
+            return;
+        }
+
+        try
+        {
+            var nativePlan = NativeFillVerificationPlan.Create(
+                nativeFillRange,
+                probeBlock);
+            AppendLog(
+                $"/fill 探针计划：原始输入「{NativeFillProbeBox.Text}」；标准化范围 {nativePlan.Range}；"
+                + $"命令 {nativePlan.Command}；采样点 [{string.Join(", ", nativePlan.SamplePositions)}]");
+        }
+        catch (Exception exception)
+        {
+            FooterStatus.Text = $"/fill 探针计划无效：{exception.Message}";
+            return;
+        }
+
         var confirmation = MessageBox.Show(
             "能力验证会在当前测试世界的三个指定位置写入探针方块。请确认坐标安全、世界可恢复，并且你明确授权此次写入。继续？",
             "确认能力探针写入",
@@ -344,12 +372,7 @@ public partial class MainWindow : Window
         try
         {
             var probe = new CommandCapabilityProbe(mcc);
-            var testBlock = ProbeBlockBox.Text.Trim();
-            if (string.IsNullOrWhiteSpace(testBlock))
-            {
-                throw new ArgumentException("探针方块不能为空。", nameof(ProbeBlockBox));
-            }
-
+            var testBlock = probeBlock;
             var report = await probe.ProbeApprovedAsync(
                 new BackendProbeRequest(
                     worldEditRange,

@@ -78,6 +78,32 @@ public sealed class BlueprintTests
     }
 
     [Fact]
+    public void ParserNormalizesPascalCaseBlockNames()
+    {
+        using var json = JsonDocument.Parse("""
+        {
+          "format": "mc-blueprint/v1",
+          "bounds": { "from": [1, 2, 3], "to": [1, 2, 3] },
+          "phases": [{
+            "id": "a",
+            "operations": [{
+              "id": "f",
+              "type": "fill",
+              "from": [1, 2, 3],
+              "to": [1, 2, 3],
+              "block": "OakPlanks"
+            }]
+          }]
+        }
+        """);
+
+        var document = BlueprintParser.ParseDocument(json.RootElement);
+
+        var fill = Assert.IsType<FillOperation>(document.Phases[0].Operations[0]);
+        Assert.Equal("minecraft:oak_planks", fill.Block);
+    }
+
+    [Fact]
     public void ParserAcceptsCanonicalMinMaxBounds()
     {
         using var json = JsonDocument.Parse("""

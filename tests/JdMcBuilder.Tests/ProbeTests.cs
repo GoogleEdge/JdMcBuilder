@@ -15,7 +15,6 @@ public sealed class ProbeTests
             "mcc_world_state",
             "mcc_server_info",
             "mcc_send_chat",
-            "mcc_chat_history",
             "mcc_world_block_at",
             "mcc_place_block",
             "mcc_select_item",
@@ -32,9 +31,9 @@ public sealed class ProbeTests
                 "mcc_player_stats" => Result(new { mainHand = "Stone" }),
                 "mcc_world_block_at" => Result(new
                 {
-                    x = 10,
-                    y = 64,
-                    z = 10,
+                    x = GetPosition(arguments).X,
+                    y = GetPosition(arguments).Y,
+                    z = GetPosition(arguments).Z,
                     material = "Stone",
                     blockId = 1,
                     blockMeta = 0,
@@ -70,7 +69,6 @@ public sealed class ProbeTests
             "mcc_session_status",
             "mcc_world_state",
             "mcc_send_chat",
-            "mcc_chat_history",
             "mcc_world_block_at");
         var fake = new FakeMcpToolInvoker(tools, (name, _, _) => Task.FromResult(name switch
         {
@@ -101,7 +99,6 @@ public sealed class ProbeTests
             "mcc_session_status",
             "mcc_world_state",
             "mcc_send_chat",
-            "mcc_chat_history",
             "mcc_world_block_at");
         var fake = new FakeMcpToolInvoker(tools, (name, _, _) => Task.FromResult(name switch
         {
@@ -130,6 +127,15 @@ public sealed class ProbeTests
 
     private static McpToolDefinition Definition(string name) =>
         new(name, null, JsonSerializer.SerializeToElement(new { type = "object" }));
+
+    private static BlockPosition GetPosition(object? arguments)
+    {
+        var element = JsonSerializer.SerializeToElement(arguments);
+        return new BlockPosition(
+            element.GetProperty("x").GetInt32(),
+            element.GetProperty("y").GetInt32(),
+            element.GetProperty("z").GetInt32());
+    }
 
     private static McpToolResult Result<T>(T value) =>
         new([], false, JsonSerializer.SerializeToElement(value));
