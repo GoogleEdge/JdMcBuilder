@@ -86,12 +86,16 @@ public sealed class NativeFillTests
             new BlockPosition(30, 64, 30)));
 
         Assert.Equal(BackendStatus.Available, report.Find("native-fill")!.Status);
-        Assert.Equal(2, calls.Count(call => call.Name == "mcc_send_chat"));
+        Assert.Equal(3, calls.Count(call => call.Name == "mcc_send_chat"));
         Assert.Single(
             calls,
             call => call.Name == "mcc_send_chat"
                 && GetText(call.Arguments) == "/fill 20 64 20 21 64 20 minecraft:stone");
-        Assert.Equal(4, calls.Count(call => call.Name == "mcc_world_block_at"));
+        Assert.Equal(5, calls.Count(call => call.Name == "mcc_world_block_at"));
+        Assert.Single(
+            calls,
+            call => call.Name == "mcc_send_chat"
+                && GetText(call.Arguments) == "/setblock 30 64 30 minecraft:stone");
     }
 
     [Fact]
@@ -158,20 +162,17 @@ public sealed class NativeFillTests
     }
 
     [Fact]
-    public async Task PersistentMismatchRemainsUnverifiedAndDoesNotProbePlaceBlock()
+    public async Task PersistentMismatchRemainsUnverifiedAndDoesNotProbeSetBlock()
     {
-        var calls = new List<string>();
+        var calls = new List<(string Name, object? Arguments)>();
         var tools = ToolSet(
             "mcc_session_status",
             "mcc_world_state",
             "mcc_send_chat",
-            "mcc_world_block_at",
-            "mcc_place_block",
-            "mcc_select_item",
-            "mcc_player_stats");
+            "mcc_world_block_at");
         var fake = new FakeMcpToolInvoker(tools, (name, arguments, _) =>
         {
-            calls.Add(name);
+            calls.Add((name, arguments));
             var position = name == "mcc_world_block_at"
                 ? GetPosition(arguments)
                 : default;
@@ -210,7 +211,10 @@ public sealed class NativeFillTests
         Assert.True(native.WriteMayHaveBeenDispatched);
         Assert.Contains("/fill 20 64 20 21 64 20 minecraft:stone", native.Reason, StringComparison.Ordinal);
         Assert.Contains("采样点", native.Reason, StringComparison.Ordinal);
-        Assert.DoesNotContain("mcc_place_block", calls);
+        Assert.DoesNotContain(
+            calls,
+            call => call.Name == "mcc_send_chat"
+                && GetText(call.Arguments) == "/setblock 30 64 30 minecraft:stone");
     }
 
     [Fact]

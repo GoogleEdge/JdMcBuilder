@@ -8,9 +8,8 @@ namespace JdMcBuilder.Backends;
 public sealed record BackendProbeRequest(
     BlockRange WorldEditRange,
     BlockRange NativeFillRange,
-    BlockPosition PlaceBlockPosition,
+    BlockPosition SetBlockPosition,
     string TestBlock = "minecraft:stone",
-    string? PlaceItemType = null,
     TimeSpan? VerificationValidity = null);
 
 public sealed record BackendProbeResult(
@@ -23,6 +22,12 @@ public sealed record BackendProbeResult(
     bool WriteMayHaveBeenDispatched = false)
 {
     public bool IsVerified => Status == BackendStatus.Available && Verification is not null;
+
+    public bool IsVerifiedFor(string? targetFingerprint) =>
+        Status == BackendStatus.Available
+        && Verification is not null
+        && !string.IsNullOrWhiteSpace(targetFingerprint)
+        && Verification.IsValidFor(BackendId, targetFingerprint);
 }
 
 public sealed record BackendProbeReport(
@@ -218,7 +223,7 @@ public sealed class CommandCapabilityProbe
             return new BackendProbeReport(probedAt, targetFingerprint, results);
         }
 
-        results.Add(await ProbePlaceBlockCoreAsync(
+        results.Add(await ProbeSetBlockCoreAsync(
             request,
             targetFingerprint,
             probedAt,
@@ -351,59 +356,30 @@ public sealed class CommandCapabilityProbe
         }
     }
 
-    private async Task<BackendProbeResult> ProbePlaceBlockCoreAsync(
+    private async Task<BackendProbeResult> ProbeSetBlockCoreAsync(
         BackendProbeRequest request,
         string targetFingerprint,
         DateTimeOffset probedAt,
         TimeSpan validity,
         CancellationToken cancellationToken)
     {
-        const string backendId = "place-block";
-        if (!HasAll(
-                "mcc_place_block",
-                "mcc_select_item",
-                "mcc_player_stats",
-                "mcc_world_block_at"))
+        const string backendId = "native-setblock";
+        if (!HasAll("mcc_send_chat", "mcc_world_block_at"))
         {
-            return Unavailable(backendId, targetFingerprint, "缺少逐块探测所需的放置、选物品、玩家状态或方块读取工具。");
+            return Unavailable(backendId, targetFingerprint, "缺少 /setblock 探测所需的 mcc_send_chat 或独立方块读取工具。");
         }
 
-        var itemType = string.IsNullOrWhiteSpace(request.PlaceItemType)
-            ? ToInventoryName(request.TestBlock)
-            : request.PlaceItemType.Trim();
-        if (itemType.Any(char.IsControl)
-            || itemType.Any(char.IsWhiteSpace))
-        {
-            return Unavailable(
-                backendId,
-                targetFingerprint,
-                "逐块探针物品名称包含空白或控制字符。");
-        }
         var mutationDispatched = false;
         try
         {
-            await _mcc.SelectItemAsync(
-                itemType,
-                cancellationToken: cancellationToken).ConfigureAwait(false);
-            var stats = await _mcc.PlayerStatsAsync(cancellationToken)
-                .ConfigureAwait(false);
-            if (!stats.TryGetItemId(out var heldItem)
-                || !ItemMatches(heldItem, itemType, request.TestBlock))
-            {
-                throw new BackendException(
-                    $"无法从 mcc_player_stats 确认手持探针物品：期望 {itemType}，实际 {heldItem ?? "未知"}。",
-                    uncertain: false);
-            }
-
+            var command = _safety.BuildNativeSetBlock(
+                request.SetBlockPosition,
+                request.TestBlock);
             mutationDispatched = true;
-            await _mcc.PlaceBlockAsync(
-                request.PlaceBlockPosition.X,
-                request.PlaceBlockPosition.Y,
-                request.PlaceBlockPosition.Z,
-                lookAtBlock: true,
-                cancellationToken: cancellationToken).ConfigureAwait(false);
+            var response = await _mcc.SendChatAsync(command, cancellationToken)
+                .ConfigureAwait(false);
             await VerifyBlockAsync(
-                request.PlaceBlockPosition,
+                request.SetBlockPosition,
                 request.TestBlock,
                 cancellationToken).ConfigureAwait(false);
 
@@ -412,8 +388,8 @@ public sealed class CommandCapabilityProbe
                 targetFingerprint,
                 probedAt,
                 validity,
-                request.PlaceBlockPosition,
-                "物品选择、手持状态、放置返回和方块采样均通过。",
+                request.SetBlockPosition,
+                $"/setblock 命令已发送；MCP 返回仅作诊断（{response.ToDiagnosticText()}），并已通过独立方块采样。",
                 true);
         }
         catch (OperationCanceledException exception)
@@ -425,7 +401,7 @@ public sealed class CommandCapabilityProbe
                     targetFingerprint,
                     exception,
                     mutationDispatched,
-                    "逐块放置探测取消");
+                    "/setblock 探测取消");
             }
 
             throw;
@@ -437,7 +413,7 @@ public sealed class CommandCapabilityProbe
                 targetFingerprint,
                 exception,
                 mutationDispatched,
-                "逐块放置探测失败");
+                "/setblock 探测失败");
         }
     }
 
@@ -483,18 +459,18 @@ public sealed class CommandCapabilityProbe
         safety.ValidateBlock(request.TestBlock);
         ValidateProbeRange(request.WorldEditRange, nameof(request.WorldEditRange));
         ValidateProbeRange(request.NativeFillRange, nameof(request.NativeFillRange));
-        if (Math.Abs((long)request.PlaceBlockPosition.X) > 30_000_000
-            || Math.Abs((long)request.PlaceBlockPosition.Y) > 30_000_000
-            || Math.Abs((long)request.PlaceBlockPosition.Z) > 30_000_000)
+        if (Math.Abs((long)request.SetBlockPosition.X) > 30_000_000
+            || Math.Abs((long)request.SetBlockPosition.Y) > 30_000_000
+            || Math.Abs((long)request.SetBlockPosition.Z) > 30_000_000)
         {
             throw new ArgumentOutOfRangeException(
-                nameof(request.PlaceBlockPosition),
-                "逐块探针坐标超出安全坐标上限。 ");
+                nameof(request.SetBlockPosition),
+                "/setblock 探针坐标超出安全坐标上限。 ");
         }
         safety.ValidateBlock(request.TestBlock);
         if (RangesOverlap(request.WorldEditRange, request.NativeFillRange)
-            || request.WorldEditRange.Contains(request.PlaceBlockPosition)
-            || request.NativeFillRange.Contains(request.PlaceBlockPosition))
+            || request.WorldEditRange.Contains(request.SetBlockPosition)
+            || request.NativeFillRange.Contains(request.SetBlockPosition))
         {
             throw new ArgumentException("三个探针区域/点必须互不重叠，以便独立验证。", nameof(request));
         }
@@ -592,34 +568,4 @@ public sealed class CommandCapabilityProbe
             WriteMayHaveBeenDispatched: uncertain);
     }
 
-    private static bool ItemMatches(
-        string actual,
-        string requested,
-        string expectedBlock)
-    {
-        static string Normalize(string value) =>
-            value.Trim().ToLowerInvariant() switch
-            {
-                var item when item.StartsWith("minecraft:", StringComparison.Ordinal)
-                    => item[10..],
-                var item => item.Replace(' ', '_').Replace('-', '_')
-            };
-
-        var actualNormalized = Normalize(actual);
-        return actualNormalized == Normalize(requested)
-            || actualNormalized == Normalize(expectedBlock);
-    }
-
-    private static string ToInventoryName(string namespacedBlock)
-    {
-        var id = namespacedBlock.StartsWith("minecraft:", StringComparison.OrdinalIgnoreCase)
-            ? namespacedBlock[10..]
-            : namespacedBlock;
-        return string.Join(
-            '_',
-            id.Split('_').Select(part =>
-                part.Length == 0
-                    ? part
-                    : char.ToUpperInvariant(part[0]) + part[1..]));
-    }
 }

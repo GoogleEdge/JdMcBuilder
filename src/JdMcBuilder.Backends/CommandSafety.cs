@@ -24,6 +24,9 @@ public sealed class CommandSafety
         return $"/fill {range.Min.X} {range.Min.Y} {range.Min.Z} {range.Max.X} {range.Max.Y} {range.Max.Z} {ValidateBlock(block)}";
     }
 
+    public string BuildNativeSetBlock(BlockPosition position, string block) =>
+        $"/setblock {ValidatePosition(position)} {ValidateBlock(block)}";
+
     public string BuildInternalSend(string chatText)
     {
         if (string.IsNullOrWhiteSpace(chatText) || chatText.Any(char.IsControl))

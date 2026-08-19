@@ -45,7 +45,8 @@
 
 - 状态/发现：`mcc_session_status`、`mcc_server_info`、`mcc_player_state`、`mcc_world_state`
 - 参考/校验：`mcc_materials_list`、`mcc_block_types_list`、`mcc_world_block_at`、`mcc_block_scan`
-- 执行候选：`mcc_run_internal_command`、`mcc_send_chat`、`mcc_place_block`
+- 执行候选：通过 `mcc_send_chat` 发送白名单 WorldEdit、`/fill` 和 `/setblock` 命令；`mcc_run_internal_command` 不作为蓝图施工入口
+
 
 文档页面没有规定具体的 HTTP 方法、JSON-RPC 封装、`tools/list` 响应样例、工具参数 schema、返回体或错误码。因此本应用**不得猜测 payload**：连接后必须执行 MCP 初始化/工具发现，并以服务器返回的 schema 生成调用参数和能力报告。真实实现前必须保存一次脱敏的 `tools/list` 输出作为契约测试样本。
 
@@ -79,7 +80,7 @@ Dry Run 预览：边界、阶段、方块统计、风险、预计调用数
 - Minecraft 版本、维度和玩家坐标（若工具提供）；
 - 发现到的工具名及 schema 摘要；
 - 是否识别到 WorldEdit 执行路径；
-- 是否只能使用逐方块慢速路径。
+- 是否只能使用 `/setblock` 显式方块路径。
 
 ## 4. 技术方案
 
@@ -199,16 +200,16 @@ JdMcBuilder.Tests             单元、契约、模拟端到端测试
 
 1. **WorldEdit 后端**：适合大体积矩形填充和重复区域，首选高速路径。
 2. **Minecraft 原生命令后端**：当前通过 `mcc_send_chat` 发送白名单 `/fill` 命令；仅在已单独实现和验证其受限契约后，才可把 `mcc_run_internal_command` 作为未来候选入口。`mcc_send_chat` 返回成功和聊天/debug 中“成功填充 N 个方块”都只是发送/诊断观察，不是世界状态证明；必须对标准化范围的独立采样点使用 `mcc_world_block_at` 验证。
-3. **MCP 逐方块后端**：使用 `mcc_place_block`，仅用于小批量或稀疏细节；界面必须显示慢速警告。
+3. **原生 `/setblock` 后端**：仅用于小批量或稀疏显式方块；每个 placement 通过 `mcc_send_chat` 发送一条由坐标和 canonical block ID 生成的 `/setblock x y z minecraft:block`，随后用同坐标 `mcc_world_block_at` 独立验证。该后端不使用 `mcc_place_block`、库存、手持物品、移动或视线交互；界面应显示逐点命令数量和慢速提示。
 
 原生 `/fill` 的读后验证允许在一次命令发送后进行有界、只读的 `mcc_world_block_at` 轮询，以处理 MCC/服务器缓存的短暂可见性延迟。轮询不得再次发送 `/fill`，不得根据聊天文本偏移坐标或静默切换后端；只要所有计划采样点最终没有匹配，结果就必须保持 `Unverified`/不确定。
 
-后端选择不得静默切换。每个阶段开始前显示实际后端和预计 MCP 调用数；能力变化或调用失败时暂停并要求用户选择重试、切换或取消。
+后端选择不得静默切换。每个阶段开始前显示实际后端和预计 MCP 调用数；能力变化或调用失败时暂停并要求用户选择重试、切换或取消。`/setblock` 显式 batch 在任一 placement 发送后发生不确定错误时，整个 batch 保持不确定，不能只重放剩余点或自动切换到其他后端。
 
 ### 6.1 批次策略
 
 - `fill` 操作优先保持为区域操作，不展开为逐方块记录。
-- `blocks` 操作按相同方块 ID 和相邻坐标合并为安全的连续区域；无法安全合并的保留为批量 setblock 或逐块操作。
+- `blocks` 操作按相同方块 ID 和相邻坐标合并为安全的连续区域；无法安全合并的保留为有界的 `/setblock` 显式 batch。
 - 默认 `maxBlocksPerOperation = 100000`，默认 `maxPayloadBytes = 512 KiB`；两者可在设置中调低或在测试世界中调高。
 - WorldEdit 选区命令必须串行执行，不能并发修改同一个玩家的选区。
 - 不同阶段之间默认串行；首版不为追求吞吐而并发发送会相互覆盖的操作。
@@ -259,7 +260,7 @@ MCP 文档列出的 `mcc_run_internal_command` 和 `mcc_send_chat` 不是等价�
 - 服务器是否有 WorldEdit 操作的方块数量限制、异步队列或冷却；
 - 是否允许从客户端/本机使用这些命令。
 
-应用的连接页显示 WorldEdit 为 `可用`、`未确认`、`不可用` 三种状态，不能把“检测到字符串”当作已获得权限。源码中的 `worldedit`、`native-fill` 和 `place-block` 三个状态彼此独立；每个后端的 `可用` 状态必须同时携带目标绑定的能力验证证明（后端 ID、目标指纹、验证时间和过期时间）；仅凭工具名只能是 `未确认`；缺少写入后观察工具时为 `不可用`。WorldEdit、原生 `/fill` 和逐块放置必须分别完成与自身后端对应的测试，不能用一个命令后端的证明授权另一个后端。在证明尚未由测试世界探测生成前，真实施工按钮必须在确认对话框之前明确阻止，不得提供启用未验证后端的生产开关。
+应用的连接页显示 WorldEdit 为 `可用`、`未确认`、`不可用` 三种状态，不能把“检测到字符串”当作已获得权限。源码中的 `worldedit`、`native-fill` 和 `native-setblock` 三个状态彼此独立；每个后端的 `可用` 状态必须同时携带目标绑定的能力验证证明（后端 ID、目标指纹、验证时间和过期时间）；仅凭工具名只能是 `未确认`；缺少写入后观察工具时为 `不可用`。WorldEdit、原生 `/fill` 和原生 `/setblock` 必须分别完成与自身后端对应的测试，不能用一个命令后端的证明授权另一个后端。在证明尚未由测试世界探测生成前，真实施工按钮必须在确认对话框之前明确阻止，不得提供启用未验证后端的生产开关。
 
 ### 7.4 Schematic 支持边界
 
@@ -312,7 +313,7 @@ profile = "configurable"
 
 能力发现和施工调用分离。`tools/list`、状态查询和方块查询可能可用，不代表写入工具有权限。
 
-当前实现的能力探测契约：能力探针必须由用户在测试/备份世界中明确确认，并为 WorldEdit、原生 `/fill`、逐块放置分别提供互不重叠的测试范围/点和探针方块。探测先调用 `mcc_session_status`、`mcc_world_state`（可选 `mcc_server_info`）生成目标指纹，再按后端独立执行写入，并以 `mcc_world_block_at` 的新鲜方块 ID 采样作为权威验证。原生 `/fill` 可在一次命令发送后对标准化范围的去重角点进行有界只读轮询，以处理短暂可见性延迟；`mcc_chat_history` 若存在只能作为可选诊断，不能证明当前命令或目标坐标，聊天/debug 中“成功填充 N 个方块”同样不能证明世界状态。只有该后端自己的写入和全部独立采样均成功时，才生成带后端 ID、目标指纹、验证时间和过期时间的 `BackendVerification`；任何权限错误、取消、超时、结果缺失、错误返回坐标或采样不匹配都不生成证明。探测失败且写入可能已发送时必须提示人工检查探针位置，不得自动重放 `/fill`、偏移坐标或静默切换后端。目标指纹不匹配或过期时，真实施工 gate 继续保持关闭。
+当前实现的能力探测契约：能力探针必须由用户在测试/备份世界中明确确认，并为 WorldEdit、原生 `/fill`、原生 `/setblock` 分别提供互不重叠的测试范围/点和探针方块。探测先调用 `mcc_session_status`、`mcc_world_state`（可选 `mcc_server_info`）生成目标指纹，再按后端独立执行写入，并以 `mcc_world_block_at` 的新鲜方块 ID 采样作为权威验证。原生 `/fill` 可在一次命令发送后对标准化范围的去重角点进行有界只读轮询，以处理短暂可见性延迟；`mcc_chat_history` 若存在只能作为可选诊断，不能证明当前命令或目标坐标，聊天/debug 中“成功填充 N 个方块”同样不能证明世界状态。原生 `/setblock` 对每个显式 placement 只发送一次 `/setblock`，并读取同一坐标；服务器返回的“更改了位于...的方块”等文本仅作诊断，不能替代采样。只有该后端自己的写入和全部独立采样均成功时，才生成带后端 ID、目标指纹、验证时间和过期时间的 `BackendVerification`；任何权限错误、取消、超时、结果缺失、错误返回坐标或采样不匹配都不生成证明。探测失败且写入可能已发送时必须提示人工检查探针位置，不得自动重放 `/fill`、`/setblock`，偏移坐标或静默切换后端。目标指纹不匹配或过期时，真实施工 gate 继续保持关闭。
 
 ## 9. 安全与恢复
 
@@ -343,7 +344,7 @@ profile = "configurable"
 }
 ```
 
-重启后只允许从成功批次继续。对于经 `mcc_send_chat` 发送的 WorldEdit `//set`，如果返回结果不确定，批次进入 `uncertain`，必须先用 `mcc_world_block_at`/扫描工具抽样或让用户重新确认，而不是自动重放。
+重启后只允许从成功批次继续。对于经 `mcc_send_chat` 发送的 WorldEdit `//set`、`/fill` 或 `/setblock`，如果返回结果不确定，整个批次进入 `uncertain`，必须先用 `mcc_world_block_at`/扫描工具抽样或让用户重新确认，而不是自动重放；`/setblock` batch 不得只重放尚未发送的剩余 placement。
 
 WorldEdit `//undo` 是当前目标部署 profile 中的可选恢复动作；若未来经 `mcc_send_chat` 实现，应按当前目标验证。无论采用何种入口，都必须确认同一玩家历史未被其他操作污染，且插件返回成功；应用不能宣称它拥有通用事务回滚。
 
@@ -355,7 +356,7 @@ WorldEdit `//undo` 是当前目标部署 profile 中的可选恢复动作；若�
 - 连接/断开；
 - MCC 会话、维度、玩家位置；
 - 工具清单、schema 摘要、读/写状态；
-- WorldEdit、原生 `/fill`、逐块放置三个独立能力状态和测试按钮；测试按钮必须显示探针坐标、探针方块和明确写入确认。
+- WorldEdit、原生 `/fill`、原生 `/setblock` 三个独立能力状态和测试按钮；测试按钮必须显示探针坐标、探针方块和明确写入确认。
 - 能力探测目标指纹、验证时间、过期时间和失败/不确定原因；未生成当前目标绑定证明时，真实施工按钮保持禁用语义。
 
 ### 10.2 导入与预览页
@@ -438,7 +439,7 @@ WorldEdit `//undo` 是当前目标部署 profile 中的可选恢复动作；若�
 2. 一次真实、脱敏的 MCP `initialize`/工具发现结果；
 3. `mcc_run_internal_command` 的完整 input schema，以及它是否能执行 `/fill`、WorldEdit 命令；
 4. `mcc_send_chat` 的完整 input schema，以及发送 WorldEdit 命令（当前目标部署应用传 `//pos x1,y1,z1 x2,y2,z2` 和 `//set`）时的返回格式；
-5. `mcc_place_block` 的完整 input schema 和失败返回；
+5. `mcc_send_chat` 发送 `/setblock` 的完整 input schema 和失败返回；
 6. Minecraft 版本、Java/Bedrock、目标维度和玩家权限；
 7. WorldEdit/兼容插件版本、权限节点、单次操作限制和是否允许当前 profile 的 `//undo`；
 8. 测试世界坐标范围和允许施工区域。
@@ -480,7 +481,7 @@ WorldEdit `//undo` 是当前目标部署 profile 中的可选恢复动作；若�
 | 工具 | 参数 | 参数示例 | 用途/策略 |
 |---|---|---|---|
 | `mcc_player_state` | 无 | `{}` | 读取玩家状态 |
-| `mcc_player_stats` | 无 | `{}` | 读取位置、朝向、快捷栏/手持；动作后验证 |
+| `mcc_player_stats` | 无 | `{}` | 通用 MCC 玩家状态参考；JdMcBuilder 的显式 `/setblock` 后端不使用 |
 | `mcc_status_effects` | 无 | `{}` | 读取状态效果 |
 | `mcc_players_list` | 无 | `{}` | 在线玩家列表 |
 | `mcc_players_detailed` | `includeSelf?`=false, `includeCoordinates?`=true | `{"includeSelf":true}` | 玩家详情/位置 |
@@ -509,8 +510,8 @@ WorldEdit `//undo` 是当前目标部署 profile 中的可选恢复动作；若�
 | `mcc_inventory_search` | `query` 必填, `maxCount?`=100, `exactMatch?`=false, `includeContainers?`=true | `{"query":"stone"}` | 检查材料库存 |
 | `mcc_inventory_drop_item` | `itemType,count` 必填, `inventoryId?`=0, `preferStack?`=false | `{"itemType":"Dirt","count":1}` | 丢弃；首版默认禁用 |
 | `mcc_inventories_list` | 无 | `{}` | 当前库存/容器列表 |
-| `mcc_select_item` | `itemType` 必填, `preferLowestSlot?`=true | `{"itemType":"Stone"}` | 逐块后端选手持材料 |
-| `mcc_change_hotbar_slot` | `slot` 必填，1-9 | `{"slot":1}` | 逐块后端切槽 |
+| `mcc_select_item` | `itemType` 必填, `preferLowestSlot?`=true | `{"itemType":"Stone"}` | 通用 MCC 玩家交互参考；JdMcBuilder 的显式 `/setblock` 后端不使用 |
+| `mcc_change_hotbar_slot` | `slot` 必填，1-9 | `{"slot":1}` | 通用 MCC 玩家交互参考；JdMcBuilder 的显式 `/setblock` 后端不使用 |
 | `mcc_container_open_at` | `x,y,z` integer 必填, `timeoutMs?`=0, `closeCurrent?`=true | `{"x":11000,"y":64,"z":11021}` | 打开容器 |
 | `mcc_container_close` | `inventoryId?`=-1, `timeoutMs?`=0 | `{"inventoryId":-1}` | 关闭容器 |
 | `mcc_container_deposit_item` | `itemType,count` 必填, `inventoryId?`=-1, `preferLargestStack?`=true | `{"itemType":"Diamond","count":5}` | 存入容器 |
@@ -536,7 +537,7 @@ WorldEdit `//undo` 是当前目标部署 profile 中的可选恢复动作；若�
 | 工具 | 参数 | 参数示例 | 用途/策略 |
 |---|---|---|---|
 | `mcc_dig_block` | `x,y,z` number 必填, `durationSeconds?`=0 | `{"x":100,"y":64,"z":-200}` | 挖掘；默认禁用，避免破坏 |
-| `mcc_place_block` | `x,y,z` integer 必填, `face?`="Up", `hand?`="MainHand", `lookAtBlock?`=false | `{"x":100,"y":64,"z":-200,"face":"Up","lookAtBlock":true}` | 只能放置当前手持材料；逐块降级 |
+| `mcc_place_block` | `x,y,z` integer 必填, `face?`="Up", `hand?`="MainHand", `lookAtBlock?`=false | `{"x":100,"y":64,"z":-200,"face":"Up","lookAtBlock":true}` | 通用 MCC 玩家交互参考；JdMcBuilder 的显式 `/setblock` 后端不使用 |
 | `mcc_use_item_on_block` | `x,y,z` number 必填 | `{"x":100,"y":64,"z":-200}` | 使用手中物品 |
 | `mcc_use_item_on_hand` | 无 | `{}` | 使用手中物品 |
 | `mcc_animation` | `hand?`="MainHand" | `{"hand":"MainHand"}` | 手臂动画 |
@@ -627,16 +628,14 @@ mcc_world_block_at({"x":x1,"y":y1,"z":z1})
 
 原生命令同样必须解析并比较返回的方块 ID；HTTP/MCP 返回成功但方块值不匹配时，不得报告批次成功。实现会从标准化的 `Min`/`Max` 组合生成最多八个去重角点，并在一次 `/fill` 发送后做有限只读轮询。初始 `air` 可以作为缓存/传播延迟观察继续轮询，但不会再次发送命令；轮询耗尽、部分角点不匹配、返回坐标错误、无法解析、取消、超时或传输失败都必须报告不确定。聊天历史和 Minecraft chat/debug 的成功文本只能记录为诊断，不能单独生成能力证明。
 
-### 逐块降级（仅小批量）
+### 原生 `/setblock` 显式后端（仅小批量）
 
 ```text
-mcc_select_item({"itemType":"Stone"})
-mcc_player_stats({})
-mcc_place_block({"x":x,"y":y,"z":z,"face":"Up","hand":"MainHand","lookAtBlock":true})
+mcc_send_chat({"text":"/setblock x y z minecraft:stone"})
 mcc_world_block_at({"x":x,"y":y,"z":z})
 ```
 
-逐块路径必须解析并比较返回的方块 ID；每个放置点都要独立验证，不能用“调用无异常”替代结果验证。`mcc_place_block` 的 `lookAtBlock` 默认值以真实工具 schema 为准；当前 wrapper 显式使用 `false` 作为 API 默认，探测和施工路径只有在需要时才显式传 `true`。
+应用按确定的 placement 顺序为每个方块生成并发送一条经过坐标和 block ID 校验的 `/setblock`，只使用 `mcc_send_chat`；不调用 `mcc_place_block`、`mcc_select_item`、`mcc_player_stats`，不要求库存、手持物品、移动或视线。`mcc_send_chat` 返回的系统文本（例如“更改了位于6, 64, 1的方块”）仅作诊断。每个点必须用同坐标的 `mcc_world_block_at` 读取并比较 canonical 方块 ID；返回坐标缺失/错误、无法解析、方块不匹配、取消、超时或传输失败都使整个显式 batch 保持不确定，禁止自动重放或改用旧的物理放置后端。
 
 能力探测和真实施工使用相同的保守不确定性规则：写入调用已经可能发出后，MCP 传输异常、取消、超时、验证回调异常、非法结果或 journal 保存失败都不得作为确定失败重试；必须写入 `uncertain` journal 并等待人工/新鲜采样确认。HTTP JSON-RPC 响应还必须是 `jsonrpc=2.0` 且 response `id` 与请求 ID 一致，缺失或错配按协议失败处理。
 

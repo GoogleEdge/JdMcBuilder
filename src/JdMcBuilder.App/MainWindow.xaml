@@ -42,15 +42,15 @@
                         <TextBlock Margin="0,14,0,4" FontWeight="SemiBold" Text="工具发现" />
                         <ListBox x:Name="ToolsList" DisplayMemberPath="Name" Height="190" />
                         <TextBlock Margin="0,12,0,4" FontWeight="SemiBold" Text="后端能力" />
-                        <TextBlock x:Name="BackendCapabilityStatus" Text="WorldEdit：未探测&#x0a;/fill：未探测&#x0a;逐块放置：未探测" TextWrapping="Wrap" />
-                        <TextBlock Margin="0,10,0,2" Text="探针方块（测试世界库存/权限）" />
+                        <TextBlock x:Name="BackendCapabilityStatus" Text="WorldEdit：未探测&#x0a;/fill：未探测&#x0a;/setblock：未探测" TextWrapping="Wrap" />
+                        <TextBlock Margin="0,10,0,2" Text="探针方块（测试世界权限）" />
                         <TextBox x:Name="ProbeBlockBox" Text="minecraft:stone" />
                         <TextBlock Margin="0,8,0,2" Text="WorldEdit 范围：x,y,z;x,y,z" />
                         <TextBox x:Name="WorldEditProbeBox" />
                         <TextBlock Margin="0,8,0,2" Text="/fill 范围：x,y,z;x,y,z" />
                         <TextBox x:Name="NativeFillProbeBox" />
-                        <TextBlock Margin="0,8,0,2" Text="逐块位置：x,y,z" />
-                        <TextBox x:Name="PlaceProbeBox" />
+                        <TextBlock Margin="0,8,0,2" Text="/setblock 位置：x,y,z" />
+                        <TextBox x:Name="SetBlockProbeBox" />
                         <Button Margin="0,10,0,0" Content="在指定探针坐标执行能力验证" Click="ProbeButton_Click" />
                     </StackPanel>
                 </ScrollViewer>

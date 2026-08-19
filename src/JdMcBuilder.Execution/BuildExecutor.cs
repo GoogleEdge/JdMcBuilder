@@ -267,7 +267,10 @@ public sealed class BuildExecutor
                 };
                 await SaveMutationStateAsync(state, message).ConfigureAwait(false);
                 Progress?.Invoke(this, new BuildProgress(batch.BatchId, batch.PhaseId, completed, total, message, true));
-                throw new BackendException(message, result.Uncertain);
+                // The journal was already marked in-flight before execution. Any
+                // unsuccessful result therefore remains uncertain, even if a
+                // backend accidentally omitted its uncertainty flag.
+                throw new BackendException(message, uncertain: true);
             }
 
             if (!string.Equals(result.BatchId, batch.BatchId, StringComparison.Ordinal)

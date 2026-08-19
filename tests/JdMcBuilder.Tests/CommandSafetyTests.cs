@@ -15,6 +15,7 @@ public sealed class CommandSafetyTests
         Assert.Equal("//set minecraft:stone", safety.BuildWorldEditSet("minecraft:stone"));
         Assert.Equal("//replace minecraft:stone minecraft:dirt", safety.BuildWorldEditReplace("minecraft:stone", "minecraft:dirt"));
         Assert.Equal("/fill 1 64 2 3 65 4 minecraft:stone", safety.BuildNativeFill(range, "minecraft:stone"));
+        Assert.Equal("/setblock 6 64 1 minecraft:stone", safety.BuildNativeSetBlock(new BlockPosition(6, 64, 1), "minecraft:stone"));
     }
 
     [Fact]
@@ -29,6 +30,12 @@ public sealed class CommandSafetyTests
             "minecraft:stone\n/op nobody"));
         Assert.Throws<BackendException>(() => safety.BuildNativeFill(
             new BlockRange(new BlockPosition(1, 0, 0), new BlockPosition(0, 0, 0)),
+            "minecraft:stone"));
+        Assert.Throws<BackendException>(() => safety.BuildNativeSetBlock(
+            new BlockPosition(0, 0, 0),
+            "minecraft:stone\n/setblock 1 1 1 minecraft:dirt"));
+        Assert.Throws<BackendException>(() => safety.BuildNativeSetBlock(
+            new BlockPosition(30_000_001, 0, 0),
             "minecraft:stone"));
         Assert.Throws<ArgumentException>(() => safety.BuildInternalSend("send\n/op nobody"));
         Assert.Throws<BackendException>(() => safety.BuildInternalSend("/fill 0 0 0 1 1 1 minecraft:stone"));

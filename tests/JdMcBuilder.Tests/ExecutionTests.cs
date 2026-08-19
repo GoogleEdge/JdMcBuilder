@@ -127,6 +127,39 @@ public sealed class ExecutionTests
     }
 
     [Fact]
+    public async Task ExecutorTreatsUnsuccessfulCertainResultAsUncertainAfterInFlightJournal()
+    {
+        var backend = new DefiniteFailureBackend(
+            BackendCapabilities.CreateVerifiedForTesting("worldedit", "WorldEdit", true, false, "test", "test-target"));
+        var journalPath = Path.Combine(Path.GetTempPath(), $"jdmc-definite-failure-{Guid.NewGuid():N}.json");
+        try
+        {
+            var executor = new BuildExecutor(
+                [backend],
+                new BackendSelector(),
+                new BuildJournal(journalPath),
+                new BuildExecutionOptions(DryRun: false, TargetFingerprint: "test-target"));
+            var batch = new FillBatch(
+                "p/o/batch-0000",
+                "p",
+                "o",
+                new BlockRange(new BlockPosition(0, 0, 0), new BlockPosition(0, 0, 0)),
+                "minecraft:stone");
+
+            var exception = await Assert.ThrowsAsync<BackendException>(() =>
+                executor.ExecuteAsync("sha256:test", [batch]));
+
+            Assert.True(exception.Uncertain);
+            var journal = await new BuildJournal(journalPath).LoadAsync();
+            Assert.Contains(batch.BatchId, journal!.UncertainBatches);
+        }
+        finally
+        {
+            File.Delete(journalPath);
+        }
+    }
+
+    [Fact]
     public async Task ExecutorMarksPostDispatchFailureAsUncertainAndDoesNotRetry()
     {
         var backend = new FailingBackend(
@@ -161,6 +194,21 @@ public sealed class ExecutionTests
         {
             File.Delete(journalPath);
         }
+    }
+
+    private sealed class DefiniteFailureBackend : IBuildBackend
+    {
+        public DefiniteFailureBackend(BackendCapabilities capabilities) => Capabilities = capabilities;
+        public BackendCapabilities Capabilities { get; }
+
+        public Task<BackendOperationResult> ExecuteAsync(BuildBatch batch, CancellationToken cancellationToken = default) =>
+            Task.FromResult(new BackendOperationResult(
+                batch.BatchId,
+                false,
+                false,
+                "backend rejected the batch",
+                0,
+                []));
     }
 
     private sealed class FailingBackend : IBuildBackend

@@ -40,7 +40,7 @@ public sealed class WorldEditCommandBackend : IBuildBackend
 
         if (batch is not FillBatch fill)
         {
-            throw new BackendException("WorldEdit 首版只支持 FillBatch；显式方块请使用逐块后端或未来 schematic 后端。" );
+            throw new BackendException("WorldEdit 首版只支持 FillBatch；显式方块请使用 /setblock 后端或未来 schematic 后端。", uncertain: false);
         }
 
         var calls = new List<string>();

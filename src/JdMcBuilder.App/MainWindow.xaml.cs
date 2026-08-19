@@ -64,11 +64,11 @@ public partial class MainWindow : Window
             {
                 await previousMcp.DisposeAsync();
             }
-            BackendCapabilityStatus.Text = "WorldEdit：未探测\n/fill：未探测\n逐块放置：未探测";
+            BackendCapabilityStatus.Text = "WorldEdit：未探测\n/fill：未探测\n/setblock：未探测";
             ToolsList.ItemsSource = client.Tools.Values.OrderBy(tool => tool.Name).ToArray();
             var report = MccCapabilityDetector.Detect(client.Tools);
             ConnectionStatus.Text = $"已连接：发现 {client.Tools.Count} 个工具";
-            AppendLog("MCP initialize + tools/list 完成。WorldEdit 与 /fill 仍需在测试世界验证权限。\n" + string.Join("\n", report.Capabilities.Select(item => $"{item.Capability}: {item.Status} — {item.Reason}")));
+            AppendLog("MCP initialize + tools/list 完成。WorldEdit、/fill 与 /setblock 仍需在测试世界分别验证权限和独立采样。\n" + string.Join("\n", report.Capabilities.Select(item => $"{item.Capability}: {item.Status} — {item.Reason}")));
             await RunPreflightAsync();
             FooterStatus.Text = "已连接；尚未执行任何写入";
         }
@@ -187,21 +187,52 @@ public partial class MainWindow : Window
         var nativeFillStatus = _backendProbeReport?.Find("native-fill") is { } nativeFillProbe
             ? nativeFillProbe.Status
             : BackendStatus.Unverified;
-        var placeBlockStatus = _backendProbeReport?.Find("place-block") is { } placeBlockProbe
-            ? placeBlockProbe.Status
+        var setBlockStatus = _backendProbeReport?.Find("native-setblock") is { } setBlockProbe
+            ? setBlockProbe.Status
             : BackendStatus.Unverified;
         var hasFill = batches.Any(batch => batch is FillBatch);
         var hasExplicitBlocks = batches.Any(batch => batch is ExplicitBlocksBatch);
-        var fillVerified = _backendProbeReport is { } probeReport
-            && (probeReport.Find("worldedit")?.IsVerified == true
-                || probeReport.Find("native-fill")?.IsVerified == true);
-        var targetFingerprint = _backendProbeReport?.TargetFingerprint;
+        var probeTargetFingerprint = _backendProbeReport?.TargetFingerprint;
+        if (string.IsNullOrWhiteSpace(probeTargetFingerprint))
+        {
+            AppendLog("施工已阻止：尚未完成带目标指纹的能力探针。 ");
+            FooterStatus.Text = "缺少目标指纹；施工已阻止";
+            return;
+        }
+
+        string currentTargetFingerprint;
+        try
+        {
+            currentTargetFingerprint = await ReadCurrentTargetFingerprintAsync(mcc);
+        }
+        catch (Exception exception)
+        {
+            AppendLog($"施工已阻止：无法重新确认当前目标世界指纹：{exception.Message}");
+            FooterStatus.Text = "无法确认当前目标世界；施工已阻止";
+            return;
+        }
+
+        if (!string.Equals(
+                probeTargetFingerprint,
+                currentTargetFingerprint,
+                StringComparison.Ordinal))
+        {
+            AppendLog(
+                $"施工已阻止：能力探针指纹与当前目标世界不一致。探针={probeTargetFingerprint}；当前={currentTargetFingerprint}。请重新执行能力探针。 ");
+            FooterStatus.Text = "目标世界已变化；请重新探针";
+            return;
+        }
+
+        var targetFingerprint = currentTargetFingerprint;
+        var worldEditVerified = _backendProbeReport?.Find("worldedit")?.IsVerifiedFor(targetFingerprint) == true;
+        var nativeFillVerified = _backendProbeReport?.Find("native-fill")?.IsVerifiedFor(targetFingerprint) == true;
+        var setBlockVerified = _backendProbeReport?.Find("native-setblock")?.IsVerifiedFor(targetFingerprint) == true;
+        var fillVerified = worldEditVerified || nativeFillVerified;
         if ((hasFill && !fillVerified)
-            || (hasExplicitBlocks
-                && _backendProbeReport?.Find("place-block")?.IsVerified != true))
+            || (hasExplicitBlocks && !setBlockVerified))
         {
             AppendLog("施工已阻止：当前没有覆盖全部批次的已验证后端。仅发现工具名称不能证明写入权限；请先在测试世界完成各后端的独立能力验证。\n" +
-                $"WorldEdit：{worldEditStatus}；/fill：{nativeFillStatus}；逐块放置：{placeBlockStatus}");
+                $"WorldEdit：{worldEditStatus}；/fill：{nativeFillStatus}；/setblock：{setBlockStatus}");
             FooterStatus.Text = "没有覆盖全部批次的已验证后端；施工已阻止";
             return;
         }
@@ -238,7 +269,7 @@ public partial class MainWindow : Window
         });
         var worldEditVerification = _backendProbeReport?.Find("worldedit")?.Verification;
         var nativeFillVerification = _backendProbeReport?.Find("native-fill")?.Verification;
-        var placeBlockVerification = _backendProbeReport?.Find("place-block")?.Verification;
+        var setBlockVerification = _backendProbeReport?.Find("native-setblock")?.Verification;
         var worldEdit = new WorldEditCommandBackend(
             mcc,
             sampleVerifier,
@@ -248,13 +279,14 @@ public partial class MainWindow : Window
             mcc,
             status: nativeFillStatus,
             verification: nativeFillVerification);
-        var placeBlock = new PlaceBlockBackend(
+        var setBlock = new NativeSetBlockBackend(
             mcc,
             sampleVerifier,
-            placeBlockStatus,
-            verification: placeBlockVerification);
+            targetFingerprint!,
+            setBlockStatus,
+            verification: setBlockVerification);
         var journalPath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "JdMcBuilder", "build-journal.json");
-        var executor = new BuildExecutor([worldEdit, nativeFill, placeBlock], new BackendSelector(), new BuildJournal(journalPath), new BuildExecutionOptions(
+        var executor = new BuildExecutor([worldEdit, nativeFill, setBlock], new BackendSelector(), new BuildJournal(journalPath), new BuildExecutionOptions(
             DryRun: false,
             AllowUnverifiedBackend: false,
             TargetFingerprint: targetFingerprint));
@@ -328,7 +360,7 @@ public partial class MainWindow : Window
 
         if (!TryParseRange(WorldEditProbeBox.Text, out var worldEditRange)
             || !TryParseRange(NativeFillProbeBox.Text, out var nativeFillRange)
-            || !TryParsePosition(PlaceProbeBox.Text, out var placePosition))
+            || !TryParsePosition(SetBlockProbeBox.Text, out var setBlockPosition))
         {
             FooterStatus.Text = "探针坐标格式无效；请使用 x,y,z;x,y,z 或 x,y,z";
             return;
@@ -377,7 +409,7 @@ public partial class MainWindow : Window
                 new BackendProbeRequest(
                     worldEditRange,
                     nativeFillRange,
-                    placePosition,
+                    setBlockPosition,
                     testBlock));
             if (generation != Volatile.Read(ref _connectionGeneration)
                 || !ReferenceEquals(_mcc, mcc))
@@ -406,7 +438,7 @@ public partial class MainWindow : Window
         catch (Exception exception)
         {
             _backendProbeReport = null;
-            BackendCapabilityStatus.Text = "WorldEdit：未探测\n/fill：未探测\n逐块放置：未探测";
+            BackendCapabilityStatus.Text = "WorldEdit：未探测\n/fill：未探测\n/setblock：未探测";
             AppendLog($"能力探针失败：{exception.Message}");
             FooterStatus.Text = "能力探针失败；施工仍保持阻止";
         }
@@ -469,9 +501,22 @@ public partial class MainWindow : Window
     {
         "worldedit" => "WorldEdit",
         "native-fill" => "/fill",
-        "place-block" => "逐块放置",
+        "native-setblock" => "/setblock",
         _ => backendId
     };
+
+    private async Task<string> ReadCurrentTargetFingerprintAsync(MccToolClient mcc)
+    {
+        var session = await mcc.SessionStatusAsync().ConfigureAwait(true);
+        var world = await mcc.WorldStateAsync().ConfigureAwait(true);
+        McpToolResult? server = null;
+        if (mcc.HasTool("mcc_server_info"))
+        {
+            server = await mcc.ServerInfoAsync().ConfigureAwait(true);
+        }
+
+        return TargetFingerprintBuilder.Create(mcc, session, world, server);
+    }
 
     private async Task RunPreflightAsync()
     {

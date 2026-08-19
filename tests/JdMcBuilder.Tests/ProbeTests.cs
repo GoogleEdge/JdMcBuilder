@@ -15,10 +15,7 @@ public sealed class ProbeTests
             "mcc_world_state",
             "mcc_server_info",
             "mcc_send_chat",
-            "mcc_world_block_at",
-            "mcc_place_block",
-            "mcc_select_item",
-            "mcc_player_stats");
+            "mcc_world_block_at");
         var calls = new List<string>();
         var fake = new FakeMcpToolInvoker(tools, (name, arguments, _) =>
         {
@@ -28,7 +25,6 @@ public sealed class ProbeTests
                 "mcc_session_status" => Result(new { sessionId = "s1", host = "localhost", port = 25565 }),
                 "mcc_world_state" => Result(new { worldName = "probe", dimension = "minecraft:overworld" }),
                 "mcc_server_info" => Result(new { version = "Leaf 1.21.11" }),
-                "mcc_player_stats" => Result(new { mainHand = "Stone" }),
                 "mcc_world_block_at" => Result(new
                 {
                     x = GetPosition(arguments).X,
@@ -59,7 +55,8 @@ public sealed class ProbeTests
             Assert.Equal(result.BackendId, result.Verification.BackendId);
         });
         Assert.Contains("mcc_send_chat", calls);
-        Assert.Contains("mcc_place_block", calls);
+        Assert.DoesNotContain("mcc_place_block", calls);
+        Assert.Equal(4, calls.Count(name => name == "mcc_send_chat"));
     }
 
     [Fact]

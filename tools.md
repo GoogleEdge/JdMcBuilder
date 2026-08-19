@@ -472,8 +472,8 @@
 - **调用示例**：`mcc_dig_block(x=100, y=64, z=-200)`
 - **注意事项**：调用成功 ≠ 挖完。需重新检查目标方块或附近方块搜索结果。
 
-### mcc_place_block
-- **用途**：在目标方块位置放置当前手持的方块/物品。
+### mcc_place_block（通用 MCC 工具参考；JdMcBuilder 显式后端不使用）
+- **用途**：通用 MCC 的玩家交互工具，在目标方块位置放置当前手持的方块/物品；这不是 JdMcBuilder 的 `/setblock` 施工路径。
 - **参数**：
   - `x` (integer, 必填)
   - `y` (integer, 必填)
@@ -481,7 +481,7 @@
   - `face` (string, 可选，默认 "Up")：放置的面
   - `hand` (string, 可选，默认 "MainHand")：使用的手
   - `lookAtBlock` (boolean, 可选，默认 false)：是否看向目标方块
-- **调用示例**：`mcc_place_block(x=100, y=63, z=-200, face="Up")`
+- **调用示例（仅通用 MCC 参考，不是 JdMcBuilder 路径）**：`mcc_place_block(x=100, y=63, z=-200, face="Up")`
 
 ### mcc_use_item_on_block
 - **用途**：在目标方块位置使用当前手持物品。
@@ -516,7 +516,7 @@
 - **调用示例**：
   - `mcc_send_chat(text="hello")`
   - `mcc_send_chat(text="/tp @s 0 64 0")`
-- **注意事项**：`mcc_send_chat` 成功只表示文本已发送或被队列接受；聊天/debug 中“成功填充 N 个方块”也只是诊断观察。命令效果必须通过新的世界状态或方块读取验证，且聊天历史不是 authoritative proof。
+- **注意事项**：`mcc_send_chat` 成功只表示文本已发送或被队列接受；聊天/debug 中“成功填充 N 个方块”或 `/setblock` 的“更改了位于...的方块”也只是诊断观察。命令效果必须通过新的世界状态或方块读取验证，且聊天历史不是 authoritative proof。JdMcBuilder 的显式后端只发送生成的 `/setblock x y z minecraft:block`，随后用同坐标的 `mcc_world_block_at` 比较 canonical 方块 ID；它不调用 `mcc_place_block`、库存或视线工具。
 
 ---
 

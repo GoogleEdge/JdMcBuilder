@@ -22,12 +22,7 @@ public static class MccCapabilityDetector
         {
             DetectCommandCapability(tools, "worldedit", "WorldEdit 命令后端"),
             DetectCommandCapability(tools, "native-fill", "Minecraft /fill 命令后端"),
-            new("place-block", tools.ContainsKey("mcc_place_block")
-                && tools.ContainsKey("mcc_select_item")
-                && tools.ContainsKey("mcc_player_stats")
-                && tools.ContainsKey("mcc_world_block_at")
-                ? CapabilityStatus.Unverified
-                : CapabilityStatus.Unavailable, "mcc_place_block", "发现放置和验证工具；仍需在测试世界验证库存、可达性和权限。"),
+            DetectCommandCapability(tools, "native-setblock", "Minecraft /setblock 命令后端"),
             new("world-sampling", tools.ContainsKey("mcc_world_block_at")
                 ? CapabilityStatus.Available
                 : CapabilityStatus.Unavailable, "mcc_world_block_at", "单点采样工具。"),

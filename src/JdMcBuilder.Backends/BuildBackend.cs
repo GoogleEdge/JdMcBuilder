@@ -249,7 +249,7 @@ public sealed class BackendSelector
             {
                 "worldedit" => 0,
                 "native-fill" => 1,
-                "place-block" => 2,
+                "native-setblock" => 2,
                 _ => 99
             });
         return candidates.FirstOrDefault(backend =>

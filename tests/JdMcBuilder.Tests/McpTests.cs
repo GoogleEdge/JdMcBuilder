@@ -49,7 +49,7 @@ public sealed class McpTests
 
         Assert.Equal(CapabilityStatus.Unavailable, report.Find("worldedit")!.Status);
         Assert.Equal(CapabilityStatus.Unavailable, report.Find("native-fill")!.Status);
-        Assert.Equal(CapabilityStatus.Unavailable, report.Find("place-block")!.Status);
+        Assert.Equal(CapabilityStatus.Unavailable, report.Find("native-setblock")!.Status);
     }
 
     [Fact]
@@ -59,17 +59,14 @@ public sealed class McpTests
         {
             ["mcc_send_chat"] = Definition("mcc_send_chat"),
             ["mcc_chat_history"] = Definition("mcc_chat_history"),
-            ["mcc_world_block_at"] = Definition("mcc_world_block_at"),
-            ["mcc_place_block"] = Definition("mcc_place_block"),
-            ["mcc_select_item"] = Definition("mcc_select_item"),
-            ["mcc_player_stats"] = Definition("mcc_player_stats")
+            ["mcc_world_block_at"] = Definition("mcc_world_block_at")
         };
 
         var report = MccCapabilityDetector.Detect(tools);
 
         Assert.Equal(CapabilityStatus.Unverified, report.Find("worldedit")!.Status);
         Assert.Equal(CapabilityStatus.Unverified, report.Find("native-fill")!.Status);
-        Assert.Equal(CapabilityStatus.Unverified, report.Find("place-block")!.Status);
+        Assert.Equal(CapabilityStatus.Unverified, report.Find("native-setblock")!.Status);
     }
 
     [Fact]
