@@ -39,6 +39,83 @@ public sealed class ExecutionTests
     }
 
     [Fact]
+    public async Task ExecutorRejectsStaleBlueprintBeforeCallingBackend()
+    {
+        var backend = new RecordingBackend(BackendCapabilities.CreateVerifiedForTesting("worldedit", "WorldEdit", true, false, "test", "target-1"));
+        var journalPath = Path.Combine(Path.GetTempPath(), $"jdmc-stale-{Guid.NewGuid():N}.json");
+        try
+        {
+            var journal = new BuildJournal(journalPath);
+            await journal.SaveAsync(BuildJournalState.Create("sha256:old", "worldedit", "target-1"));
+            var executor = new BuildExecutor(
+                [backend],
+                new BackendSelector(),
+                journal,
+                new BuildExecutionOptions(DryRun: false, TargetFingerprint: "target-1"));
+            var batch = new FillBatch(
+                "p/o/batch-0000",
+                "p",
+                "o",
+                new BlockRange(new BlockPosition(0, 0, 0), new BlockPosition(0, 0, 0)),
+                "minecraft:stone");
+
+            await Assert.ThrowsAsync<InvalidOperationException>(() =>
+                executor.ExecuteAsync("sha256:new", [batch]));
+
+            Assert.Empty(backend.Calls);
+        }
+        finally
+        {
+            File.Delete(journalPath);
+        }
+    }
+
+    [Fact]
+    public async Task ExecutorStartsFreshAfterExplicitStaleArchive()
+    {
+        var backend = new RecordingBackend(BackendCapabilities.CreateVerifiedForTesting("worldedit", "WorldEdit", true, false, "test", "target-1"));
+        var journalPath = Path.Combine(Path.GetTempPath(), $"jdmc-fresh-{Guid.NewGuid():N}.json");
+        try
+        {
+            var journal = new BuildJournal(journalPath);
+            await journal.SaveAsync(BuildJournalState.Create("sha256:old", "worldedit", "target-1") with
+            {
+                CompletedBatches = ["p/o/old-batch"]
+            });
+            var snapshot = await journal.ReadSnapshotAsync();
+            var archive = await journal.ArchiveStaleAndResetAsync(snapshot!, "sha256:new");
+            Assert.True(archive.Archived);
+
+            var batches = new BuildBatch[]
+            {
+                new FillBatch("p/o/new-batch-0000", "p", "o", new BlockRange(new BlockPosition(0, 0, 0), new BlockPosition(0, 0, 0)), "minecraft:stone")
+            };
+            var executor = new BuildExecutor(
+                [backend],
+                new BackendSelector(),
+                journal,
+                new BuildExecutionOptions(DryRun: false, TargetFingerprint: "target-1"));
+
+            await executor.ExecuteAsync("sha256:new", batches);
+
+            Assert.Equal(["p/o/new-batch-0000"], backend.Calls);
+            var newState = await journal.LoadAsync();
+            Assert.NotNull(newState);
+            Assert.Equal("sha256:new", newState!.BlueprintHash);
+            Assert.DoesNotContain("p/o/old-batch", newState.CompletedBatches);
+        }
+        finally
+        {
+            File.Delete(journalPath);
+            var directory = Path.Combine(Path.GetDirectoryName(journalPath)!, "archives");
+            if (Directory.Exists(directory))
+            {
+                Directory.Delete(directory, recursive: true);
+            }
+        }
+    }
+
+    [Fact]
     public void RealExecutionRequiresTargetFingerprint()
     {
         var path = Path.Combine(Path.GetTempPath(), $"jdmc-options-{Guid.NewGuid():N}.json");

@@ -68,6 +68,7 @@
                     <TextBox Grid.Row="2" x:Name="LogBox" IsReadOnly="True" AcceptsReturn="True" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Auto" TextWrapping="NoWrap" />
                     <StackPanel Grid.Row="3" Orientation="Horizontal">
                         <Button Content="开始施工（需确认）" Click="StartBuildButton_Click" />
+                        <Button Content="归档旧 journal（新 session）" Click="ArchiveJournalButton_Click" />
                         <Button Content="暂停" Click="PauseButton_Click" />
                         <Button Content="继续" Click="ResumeButton_Click" />
                         <Button Content="取消施工" Click="CancelButton_Click" />

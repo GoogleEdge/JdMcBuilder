@@ -20,6 +20,9 @@ public partial class MainWindow : Window
     private CancellationTokenSource? _buildCancellation;
     private bool _isBuilding;
     private bool _isProbing;
+    private bool _isJournalAction;
+    private string? _importedBlueprintHash;
+    private int _workflowBusy;
     private int _connectionGeneration;
     private Task? _buildTask;
     private BackendProbeReport? _backendProbeReport;
@@ -31,9 +34,9 @@ public partial class MainWindow : Window
 
     private async void ConnectButton_Click(object sender, RoutedEventArgs e)
     {
-        if (_isBuilding || _isProbing)
+        if (_isBuilding || _isProbing || Volatile.Read(ref _workflowBusy) != 0)
         {
-            FooterStatus.Text = "施工或能力探针运行期间不能重连";
+            FooterStatus.Text = "施工、能力探针或其他操作运行期间不能重连";
             return;
         }
 
@@ -82,9 +85,9 @@ public partial class MainWindow : Window
 
     private async void ImportButton_Click(object sender, RoutedEventArgs e)
     {
-        if (_isBuilding || _isProbing)
+        if (_isBuilding || _isProbing || _isJournalAction || Volatile.Read(ref _workflowBusy) != 0)
         {
-            FooterStatus.Text = "施工或能力探针运行期间不能更换蓝图";
+            FooterStatus.Text = "施工、能力探针或 journal 操作运行期间不能更换蓝图";
             return;
         }
 
@@ -101,7 +104,9 @@ public partial class MainWindow : Window
         try
         {
             var blueprint = await BlueprintParser.LoadAsync(dialog.FileName);
+            var importedHash = await BlueprintHash.ComputeFileSha256Async(dialog.FileName);
             _blueprint = blueprint;
+            _importedBlueprintHash = importedHash;
             // “全世界可用”不等于无限制写入；导入文件声明的 bounds 是首版的空间护栏。
             var safetyOptions = new BuildSafetyOptions { AllowedRegion = blueprint.Bounds };
             var validation = BlueprintValidator.Validate(blueprint, safetyOptions);
@@ -112,6 +117,7 @@ public partial class MainWindow : Window
             {
                 _blueprint = null;
                 _batches = null;
+                _importedBlueprintHash = null;
                 FooterStatus.Text = "蓝图校验失败，未准备施工";
                 return;
             }
@@ -127,6 +133,7 @@ public partial class MainWindow : Window
         {
             _blueprint = null;
             _batches = null;
+            _importedBlueprintHash = null;
             BlueprintPath.Text = "尚未导入蓝图";
             BlueprintSummary.Text = "导入失败。";
             AppendLog($"导入失败：{exception.Message}");
@@ -136,9 +143,9 @@ public partial class MainWindow : Window
 
     private async void DryRunButton_Click(object sender, RoutedEventArgs e)
     {
-        if (_isBuilding || _isProbing)
+        if (_isBuilding || _isProbing || _isJournalAction)
         {
-            FooterStatus.Text = "已有施工或能力探针任务正在运行";
+            FooterStatus.Text = "已有施工、能力探针或 journal 任务正在运行";
             return;
         }
 
@@ -166,9 +173,27 @@ public partial class MainWindow : Window
 
     private async void StartBuildButton_Click(object sender, RoutedEventArgs e)
     {
-        if (_isBuilding)
+        if (Interlocked.CompareExchange(ref _workflowBusy, 1, 0) != 0)
         {
-            FooterStatus.Text = "已有施工任务正在运行";
+            FooterStatus.Text = "已有施工、能力探针或 journal 任务正在运行";
+            return;
+        }
+
+        try
+        {
+            await StartBuildCoreAsync();
+        }
+        finally
+        {
+            Volatile.Write(ref _workflowBusy, 0);
+        }
+    }
+
+    private async Task StartBuildCoreAsync()
+    {
+        if (_isBuilding || _isProbing || _isJournalAction)
+        {
+            FooterStatus.Text = "已有施工、能力探针或 journal 任务正在运行";
             return;
         }
 
@@ -266,7 +291,7 @@ public partial class MainWindow : Window
             targetFingerprint!,
             setBlockStatus,
             verification: setBlockVerification);
-        var journalPath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "JdMcBuilder", "build-journal.json");
+        var journalPath = GetBuildJournalPath();
         var executor = new BuildExecutor([worldEdit, nativeFill, setBlock], new BackendSelector(), new BuildJournal(journalPath), new BuildExecutionOptions(
             DryRun: false,
             AllowUnverifiedBackend: false,
@@ -287,6 +312,11 @@ public partial class MainWindow : Window
             }
 
             var hash = await BlueprintHash.ComputeFileSha256Async(blueprintPath, buildCancellation.Token);
+            if (!string.Equals(hash, _importedBlueprintHash, StringComparison.Ordinal))
+            {
+                throw new InvalidOperationException("导入后的蓝图文件内容已变化；请重新导入并重新规划批次。 ");
+            }
+
             buildTask = executor.ExecuteAsync(hash, batches, buildCancellation.Token);
             _buildTask = buildTask;
             await buildTask;
@@ -315,14 +345,16 @@ public partial class MainWindow : Window
             {
                 _buildTask = null;
             }
+
+            Volatile.Write(ref _workflowBusy, 0);
         }
     }
 
     private async void ProbeButton_Click(object sender, RoutedEventArgs e)
     {
-        if (_isBuilding || _isProbing)
+        if (_isBuilding || _isProbing || Volatile.Read(ref _workflowBusy) != 0)
         {
-            FooterStatus.Text = "施工期间不能执行能力探针";
+            FooterStatus.Text = "施工或其他操作运行期间不能执行能力探针";
             return;
         }
 
@@ -379,6 +411,12 @@ public partial class MainWindow : Window
             return;
         }
 
+        if (Interlocked.CompareExchange(ref _workflowBusy, 1, 0) != 0)
+        {
+            FooterStatus.Text = "已有其他操作正在准备；能力探针已阻止";
+            return;
+        }
+
         var generation = Volatile.Read(ref _connectionGeneration);
         _isProbing = true;
         _backendProbeReport = null;
@@ -426,8 +464,93 @@ public partial class MainWindow : Window
         finally
         {
             _isProbing = false;
+            Volatile.Write(ref _workflowBusy, 0);
         }
     }
+
+    private async void ArchiveJournalButton_Click(object sender, RoutedEventArgs e)
+    {
+        if (_isBuilding || _isProbing || _isJournalAction || Interlocked.CompareExchange(ref _workflowBusy, 1, 0) != 0)
+        {
+            FooterStatus.Text = "施工、能力探针或其他 journal 操作运行期间不能归档";
+            return;
+        }
+
+        if (_blueprint is null || _batches is null || string.IsNullOrWhiteSpace(BlueprintPath.Text) || !File.Exists(BlueprintPath.Text))
+        {
+            FooterStatus.Text = "请先导入可读取的蓝图，再处理 journal";
+            Volatile.Write(ref _workflowBusy, 0);
+            return;
+        }
+
+        _isJournalAction = true;
+        try
+        {
+            var currentHash = await ComputeBlueprintHashAsync();
+            if (!string.Equals(currentHash, _importedBlueprintHash, StringComparison.Ordinal))
+            {
+                AppendLog("journal 归档已阻止：导入后的蓝图文件内容已变化，请重新导入。 ");
+                FooterStatus.Text = "蓝图文件已变化；请重新导入后再处理 journal";
+                return;
+            }
+
+            var journal = new BuildJournal(GetBuildJournalPath());
+            var snapshot = await journal.ReadSnapshotAsync();
+            if (snapshot is null)
+            {
+                AppendLog("没有活动 build journal，未执行归档。 ");
+                FooterStatus.Text = "没有活动 build journal；未执行归档";
+                return;
+            }
+
+            var state = snapshot.State;
+            var warning =
+                $"活动 journal 属于旧蓝图。\n\n"
+                + $"Session：{state.SessionId}\n"
+                + $"旧蓝图 hash：{state.BlueprintHash}\n"
+                + $"当前蓝图 hash：{currentHash}\n"
+                + $"已完成批次：{state.CompletedBatches.Count}\n"
+                + $"不确定批次：{state.UncertainBatches.Count}\n\n"
+                + "归档只会移动本地 journal，不会回滚 Minecraft 世界，也不会自动重放或验证旧批次。"
+                + (state.UncertainBatches.Count > 0
+                    ? "存在不确定批次，必须先人工/新鲜采样确认；当前操作不会归档它。"
+                    : "确认后需要重新执行 Dry Run，并在必要时重新进行能力探针。")
+                + "\n\n是否继续？";
+            if (MessageBox.Show(warning, "归档旧 journal 并开始新 session", MessageBoxButton.YesNo, MessageBoxImage.Warning) != MessageBoxResult.Yes)
+            {
+                FooterStatus.Text = "已取消 journal 归档";
+                return;
+            }
+
+            var result = await journal.ArchiveStaleAndResetAsync(snapshot, currentHash);
+            AppendLog(result.Message);
+            FooterStatus.Text = result.Status switch
+            {
+                JournalArchiveStatus.Archived => "旧 journal 已归档；请重新 Dry Run 后再开始施工",
+                JournalArchiveStatus.BlockedByUncertain => "journal 含不确定批次；归档已阻止",
+                JournalArchiveStatus.ChangedSinceSnapshot => "journal 已变化；请重新读取后再确认",
+                JournalArchiveStatus.NotStale => "journal 已对应当前蓝图；未归档",
+                _ => "没有活动 journal；未归档"
+            };
+        }
+        catch (OperationCanceledException)
+        {
+            FooterStatus.Text = "journal 归档已取消";
+        }
+        catch (Exception exception)
+        {
+            AppendLog($"journal 归档失败：{exception.Message}");
+            FooterStatus.Text = "journal 归档失败；原文件未被应用主动删除";
+        }
+        finally
+        {
+            _isJournalAction = false;
+            Volatile.Write(ref _workflowBusy, 0);
+        }
+    }
+
+    private static string GetBuildJournalPath() =>
+        Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "JdMcBuilder", "build-journal.json");
 
     private void PauseButton_Click(object sender, RoutedEventArgs e)
     {

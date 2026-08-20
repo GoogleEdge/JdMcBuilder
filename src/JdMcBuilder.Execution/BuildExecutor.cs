@@ -128,7 +128,7 @@ public sealed class BuildExecutor
         if (_options.DryRun)
         {
             var dryRun = BuildJournalState.Create(blueprintHash, "dry-run", _options.TargetFingerprint);
-            await _journal.SaveAsync(dryRun, cancellationToken).ConfigureAwait(false);
+            await _journal.SaveUnderExecutionAsync(dryRun, cancellationToken).ConfigureAwait(false);
             var dryRunCompleted = 0L;
             foreach (var batch in batches)
             {
@@ -141,7 +141,7 @@ public sealed class BuildExecutor
             return dryRun;
         }
 
-        var state = await _journal.LoadAsync(cancellationToken).ConfigureAwait(false);
+        var state = await _journal.LoadUnderExecutionAsync(cancellationToken).ConfigureAwait(false);
         if (state is null)
         {
             state = BuildJournalState.Create(
@@ -302,7 +302,7 @@ public sealed class BuildExecutor
             };
             try
             {
-                await _journal.SaveAsync(state, CancellationToken.None).ConfigureAwait(false);
+                await _journal.SaveUnderExecutionAsync(state, CancellationToken.None).ConfigureAwait(false);
             }
             catch (Exception journalException)
             {
@@ -316,7 +316,7 @@ public sealed class BuildExecutor
                 };
                 try
                 {
-                    await _journal.SaveAsync(uncertainState, CancellationToken.None).ConfigureAwait(false);
+                    await _journal.SaveUnderExecutionAsync(uncertainState, CancellationToken.None).ConfigureAwait(false);
                 }
                 catch (Exception fallbackException)
                 {
@@ -362,7 +362,7 @@ public sealed class BuildExecutor
     {
         try
         {
-            await _journal.SaveAsync(state).ConfigureAwait(false);
+            await _journal.SaveUnderExecutionAsync(state).ConfigureAwait(false);
         }
         catch (Exception journalException)
         {
