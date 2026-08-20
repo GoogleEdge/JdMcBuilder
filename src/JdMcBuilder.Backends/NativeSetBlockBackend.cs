@@ -7,19 +7,19 @@ public sealed class NativeSetBlockBackend : IBuildBackend
 {
     private readonly MccToolClient _mcc;
     private readonly CommandSafety _safety;
-    private readonly Func<BlockPosition, string, CancellationToken, Task> _verify;
+    private readonly NativeSetBlockVerifier _verifier;
     private readonly string _targetFingerprint;
 
     public NativeSetBlockBackend(
         MccToolClient mcc,
-        Func<BlockPosition, string, CancellationToken, Task> verify,
+        NativeSetBlockVerifier verifier,
         string targetFingerprint,
         BackendStatus status = BackendStatus.Unverified,
         CommandSafety? safety = null,
         BackendVerification? verification = null)
     {
         _mcc = mcc ?? throw new ArgumentNullException(nameof(mcc));
-        _verify = verify ?? throw new ArgumentNullException(nameof(verify));
+        _verifier = verifier ?? throw new ArgumentNullException(nameof(verifier));
         ArgumentException.ThrowIfNullOrWhiteSpace(targetFingerprint);
         _targetFingerprint = targetFingerprint;
         _safety = safety ?? new CommandSafety();
@@ -92,8 +92,10 @@ public sealed class NativeSetBlockBackend : IBuildBackend
                 calls.Add($"mcc_send_chat({command})");
                 // The send response, including a human-readable "changed block"
                 // message, is diagnostic only. Fresh world sampling is proof.
-                await _verify(placement.Position, placement.Block, cancellationToken)
-                    .ConfigureAwait(false);
+                await _verifier.VerifyAsync(
+                    placement.Position,
+                    placement.Block,
+                    cancellationToken).ConfigureAwait(false);
             }
 
             return new BackendOperationResult(

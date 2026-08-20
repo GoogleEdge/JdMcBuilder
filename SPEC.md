@@ -200,9 +200,9 @@ JdMcBuilder.Tests             单元、契约、模拟端到端测试
 
 1. **WorldEdit 后端**：适合大体积矩形填充和重复区域，首选高速路径。
 2. **Minecraft 原生命令后端**：当前通过 `mcc_send_chat` 发送白名单 `/fill` 命令；仅在已单独实现和验证其受限契约后，才可把 `mcc_run_internal_command` 作为未来候选入口。`mcc_send_chat` 返回成功和聊天/debug 中“成功填充 N 个方块”都只是发送/诊断观察，不是世界状态证明；必须对标准化范围的独立采样点使用 `mcc_world_block_at` 验证。
-3. **原生 `/setblock` 后端**：仅用于小批量或稀疏显式方块；每个 placement 通过 `mcc_send_chat` 发送一条由坐标和 canonical block ID 生成的 `/setblock x y z minecraft:block`，随后用同坐标 `mcc_world_block_at` 独立验证。该后端不使用 `mcc_place_block`、库存、手持物品、移动或视线交互；界面应显示逐点命令数量和慢速提示。
+3. **原生 `/setblock` 后端**：仅用于小批量或稀疏显式方块；每个 placement 通过 `mcc_send_chat` 发送一条由坐标和 canonical block ID 生成的 `/setblock x y z minecraft:block`，随后用同坐标 `mcc_world_block_at` 独立验证；如果首个读取可能是写入可见性延迟造成的旧值，可进行有界只读轮询，但绝不重发该 `/setblock`。持续不匹配、无法解析、错误坐标、超时、取消或传输失败仍必须保持不确定。该后端不使用 `mcc_place_block`、库存、手持物品、移动或视线交互；界面应显示逐点命令数量和慢速提示。
 
-原生 `/fill` 的读后验证允许在一次命令发送后进行有界、只读的 `mcc_world_block_at` 轮询，以处理 MCC/服务器缓存的短暂可见性延迟。轮询不得再次发送 `/fill`，不得根据聊天文本偏移坐标或静默切换后端；只要所有计划采样点最终没有匹配，结果就必须保持 `Unverified`/不确定。
+原生 `/fill` 的读后验证允许在一次命令发送后进行有界、只读的 `mcc_world_block_at` 轮询，以处理 MCC/服务器缓存的短暂可见性延迟。原生 `/setblock` 对每个 placement 也可以在单次发送后对同一坐标进行相同性质的有限只读轮询；两者的轮询都不得再次发送命令，不得根据聊天文本偏移坐标或静默切换后端；只要计划采样点最终没有匹配，结果就必须保持 `Unverified`/不确定。
 
 后端选择不得静默切换。每个阶段开始前显示实际后端和预计 MCP 调用数；能力变化或调用失败时暂停并要求用户选择重试、切换或取消。`/setblock` 显式 batch 在任一 placement 发送后发生不确定错误时，整个 batch 保持不确定，不能只重放剩余点或自动切换到其他后端。
 
@@ -313,7 +313,7 @@ profile = "configurable"
 
 能力发现和施工调用分离。`tools/list`、状态查询和方块查询可能可用，不代表写入工具有权限。
 
-当前实现的能力探测契约：能力探针必须由用户在测试/备份世界中明确确认，并为 WorldEdit、原生 `/fill`、原生 `/setblock` 分别提供互不重叠的测试范围/点和探针方块。探测先调用 `mcc_session_status`、`mcc_world_state`（可选 `mcc_server_info`）生成目标指纹，再按后端独立执行写入，并以 `mcc_world_block_at` 的新鲜方块 ID 采样作为权威验证。原生 `/fill` 可在一次命令发送后对标准化范围的去重角点进行有界只读轮询，以处理短暂可见性延迟；`mcc_chat_history` 若存在只能作为可选诊断，不能证明当前命令或目标坐标，聊天/debug 中“成功填充 N 个方块”同样不能证明世界状态。原生 `/setblock` 对每个显式 placement 只发送一次 `/setblock`，并读取同一坐标；服务器返回的“更改了位于...的方块”等文本仅作诊断，不能替代采样。只有该后端自己的写入和全部独立采样均成功时，才生成带后端 ID、目标指纹、验证时间和过期时间的 `BackendVerification`；任何权限错误、取消、超时、结果缺失、错误返回坐标或采样不匹配都不生成证明。探测失败且写入可能已发送时必须提示人工检查探针位置，不得自动重放 `/fill`、`/setblock`，偏移坐标或静默切换后端。目标指纹不匹配或过期时，真实施工 gate 继续保持关闭。
+当前实现的能力探测契约：能力探针必须由用户在测试/备份世界中明确确认，并为 WorldEdit、原生 `/fill`、原生 `/setblock` 分别提供互不重叠的测试范围/点和探针方块。探测先调用 `mcc_session_status`、`mcc_world_state`（可选 `mcc_server_info`）生成目标指纹，再按后端独立执行写入，并以 `mcc_world_block_at` 的新鲜方块 ID 采样作为权威验证。原生 `/fill` 可在一次命令发送后对标准化范围的去重角点进行有界只读轮询，以处理短暂可见性延迟；`mcc_chat_history` 若存在只能作为可选诊断，不能证明当前命令或目标坐标，聊天/debug 中“成功填充 N 个方块”同样不能证明世界状态。原生 `/setblock` 对每个显式 placement 只发送一次 `/setblock`，并读取同一坐标；首个可解析但不匹配的旧值允许触发有界只读轮询，服务器返回的“更改了位于...的方块”等文本仅作诊断，不能替代采样。只有该后端自己的写入和全部独立采样均成功时，才生成带后端 ID、目标指纹、验证时间和过期时间的 `BackendVerification`；任何权限错误、取消、超时、结果缺失、错误返回坐标或采样不匹配都不生成证明。探测失败且写入可能已发送时必须提示人工检查探针位置，不得自动重放 `/fill`、`/setblock`，偏移坐标或静默切换后端。目标指纹不匹配或过期时，真实施工 gate 继续保持关闭。
 
 ## 9. 安全与恢复
 
@@ -635,7 +635,7 @@ mcc_send_chat({"text":"/setblock x y z minecraft:stone"})
 mcc_world_block_at({"x":x,"y":y,"z":z})
 ```
 
-应用按确定的 placement 顺序为每个方块生成并发送一条经过坐标和 block ID 校验的 `/setblock`，只使用 `mcc_send_chat`；不调用 `mcc_place_block`、`mcc_select_item`、`mcc_player_stats`，不要求库存、手持物品、移动或视线。`mcc_send_chat` 返回的系统文本（例如“更改了位于6, 64, 1的方块”）仅作诊断。每个点必须用同坐标的 `mcc_world_block_at` 读取并比较 canonical 方块 ID；返回坐标缺失/错误、无法解析、方块不匹配、取消、超时或传输失败都使整个显式 batch 保持不确定，禁止自动重放或改用旧的物理放置后端。
+应用按确定的 placement 顺序为每个方块生成并发送一条经过坐标和 block ID 校验的 `/setblock`，只使用 `mcc_send_chat`；不调用 `mcc_place_block`、`mcc_select_item`、`mcc_player_stats`，不要求库存、手持物品、移动或视线。`mcc_send_chat` 返回的系统文本（例如“更改了位于6, 64, 1的方块”）仅作诊断。每个点必须用同坐标的 `mcc_world_block_at` 读取并比较 canonical 方块 ID；首次读取若是可解析但暂时不匹配的旧值，可在单次发送后进行有界只读轮询，不能重发 `/setblock`。返回坐标缺失/错误、无法解析、轮询耗尽、取消、超时或传输失败都使整个显式 batch 保持不确定，禁止自动重放、坐标偏移或改用旧的物理放置后端。
 
 能力探测和真实施工使用相同的保守不确定性规则：写入调用已经可能发出后，MCP 传输异常、取消、超时、验证回调异常、非法结果或 journal 保存失败都不得作为确定失败重试；必须写入 `uncertain` journal 并等待人工/新鲜采样确认。HTTP JSON-RPC 响应还必须是 `jsonrpc=2.0` 且 response `id` 与请求 ID 一致，缺失或错配按协议失败处理。
 

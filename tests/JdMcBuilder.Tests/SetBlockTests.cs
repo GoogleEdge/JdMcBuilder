@@ -39,22 +39,14 @@ public sealed class SetBlockTests
         var mcc = new MccToolClient(fake);
         var backend = new NativeSetBlockBackend(
             mcc,
-            async (position, expected, cancellationToken) =>
-            {
-                var sample = await mcc.WorldBlockAtAsync(
-                    position.X,
-                    position.Y,
-                    position.Z,
-                    cancellationToken);
-                if (!sample.TryGetBlockSample(out var actual, out var returnedPosition)
-                    || returnedPosition != position
-                    || !string.Equals(actual, expected, StringComparison.OrdinalIgnoreCase))
+            new NativeSetBlockVerifier(
+                mcc,
+                new NativeSetBlockVerificationOptions
                 {
-                    throw new BackendException(
-                        $"独立采样不匹配：请求 {position}，期望 {expected}。",
-                        uncertain: true);
-                }
-            },
+                    InitialDelay = TimeSpan.Zero,
+                    MaximumDelay = TimeSpan.Zero,
+                    DelayAsync = static (_, _) => Task.CompletedTask
+                }),
             "test-target",
             BackendStatus.Available,
             verification: BackendVerification.CreateForTesting("native-setblock"));
@@ -100,7 +92,14 @@ public sealed class SetBlockTests
         });
         var backend = new NativeSetBlockBackend(
             new MccToolClient(fake),
-            (_, _, _) => Task.CompletedTask,
+            new NativeSetBlockVerifier(
+                new MccToolClient(fake),
+                new NativeSetBlockVerificationOptions
+                {
+                    InitialDelay = TimeSpan.Zero,
+                    MaximumDelay = TimeSpan.Zero,
+                    DelayAsync = static (_, _) => Task.CompletedTask
+                }),
             "test-target",
             BackendStatus.Available,
             verification: BackendVerification.CreateForTesting("native-setblock"));
@@ -134,7 +133,14 @@ public sealed class SetBlockTests
         });
         var backend = new NativeSetBlockBackend(
             new MccToolClient(fake),
-            (_, _, _) => Task.CompletedTask,
+            new NativeSetBlockVerifier(
+                new MccToolClient(fake),
+                new NativeSetBlockVerificationOptions
+                {
+                    InitialDelay = TimeSpan.Zero,
+                    MaximumDelay = TimeSpan.Zero,
+                    DelayAsync = static (_, _) => Task.CompletedTask
+                }),
             "test-target",
             BackendStatus.Available,
             verification: BackendVerification.CreateForTesting("native-setblock"));
@@ -151,7 +157,106 @@ public sealed class SetBlockTests
     }
 
     [Fact]
-    public async Task BackendDoesNotRetryAfterVerificationMismatch()
+    public async Task BackendPollsDelayedVisibilityWithoutResendingSetblock()
+    {
+        var calls = new List<string>();
+        var reads = 0;
+        var tools = ToolSet("mcc_send_chat", "mcc_world_block_at");
+        var fake = new FakeMcpToolInvoker(tools, (name, arguments, _) =>
+        {
+            calls.Add(name);
+            if (name == "mcc_world_block_at")
+            {
+                reads++;
+                var position = GetPosition(arguments);
+                return Task.FromResult(reads == 1
+                    ? Result(new { x = position.X, y = position.Y, z = position.Z, material = "Air" })
+                    : Result(new { x = position.X, y = position.Y, z = position.Z, material = "Stone" }));
+            }
+
+            return Task.FromResult(Result(new { text = "更改了位于6, 64, 1的方块" }));
+        });
+        var mcc = new MccToolClient(fake);
+        var backend = new NativeSetBlockBackend(
+            mcc,
+            new NativeSetBlockVerifier(
+                mcc,
+                new NativeSetBlockVerificationOptions
+                {
+                    MaxAttemptsPerPlacement = 2,
+                    InitialDelay = TimeSpan.Zero,
+                    MaximumDelay = TimeSpan.Zero,
+                    DelayAsync = static (_, _) => Task.CompletedTask
+                }),
+            "test-target",
+            BackendStatus.Available,
+            verification: BackendVerification.CreateForTesting("native-setblock"));
+        var batch = new ExplicitBlocksBatch(
+            "phase/details/batch-0000",
+            "phase",
+            "details",
+            [new BlockPlacement(new BlockPosition(6, 64, 1), "minecraft:stone")]);
+
+        var result = await backend.ExecuteAsync(batch);
+
+        Assert.True(result.Succeeded);
+        Assert.Equal(1, calls.Count(name => name == "mcc_send_chat"));
+        Assert.Equal(2, calls.Count(name => name == "mcc_world_block_at"));
+        Assert.DoesNotContain("mcc_place_block", calls);
+    }
+
+    [Fact]
+    public async Task VerifierRejectsLateReadAfterCancellation()
+    {
+        var readStarted = new TaskCompletionSource<bool>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var readResult = new TaskCompletionSource<McpToolResult>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var tools = ToolSet("mcc_world_block_at");
+        var fake = new FakeMcpToolInvoker(tools, (name, _, _) =>
+        {
+            if (name == "mcc_world_block_at")
+            {
+                readStarted.TrySetResult(true);
+                return readResult.Task;
+            }
+
+            throw new InvalidOperationException($"Unexpected tool: {name}");
+        });
+        var verifier = new NativeSetBlockVerifier(
+            new MccToolClient(fake),
+            new NativeSetBlockVerificationOptions
+            {
+                MaxAttemptsPerPlacement = 1,
+                OverallTimeout = TimeSpan.FromSeconds(1),
+                InitialDelay = TimeSpan.Zero,
+                MaximumDelay = TimeSpan.Zero,
+                DelayAsync = static (_, _) => Task.CompletedTask
+            });
+        using var cancellation = new CancellationTokenSource();
+        var verification = verifier.VerifyAsync(
+            new BlockPosition(6, 64, 1),
+            "minecraft:stone",
+            cancellation.Token);
+
+        await readStarted.Task;
+        cancellation.Cancel();
+        readResult.TrySetResult(Result(new
+        {
+            x = 6,
+            y = 64,
+            z = 1,
+            material = "Stone"
+        }));
+
+        var exception = await Assert.ThrowsAsync<BackendException>(() => verification);
+
+        Assert.True(exception.Uncertain);
+        Assert.Contains("验证被取消", exception.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task BackendKeepsPersistentMismatchUncertainWithoutResendingSetblock()
     {
         var calls = new List<string>();
         var tools = ToolSet("mcc_send_chat", "mcc_world_block_at");
@@ -162,21 +267,18 @@ public sealed class SetBlockTests
                 ? Result(new { x = 6, y = 64, z = 1, material = "Dirt" })
                 : Result(new { text = "更改了位于6, 64, 1的方块" }));
         });
+        var mcc = new MccToolClient(fake);
         var backend = new NativeSetBlockBackend(
-            new MccToolClient(fake),
-            async (position, expected, cancellationToken) =>
-            {
-                var result = await new MccToolClient(fake).WorldBlockAtAsync(
-                    position.X,
-                    position.Y,
-                    position.Z,
-                    cancellationToken);
-                if (!result.TryGetBlockSample(out var actual, out _)
-                    || !string.Equals(actual, expected, StringComparison.OrdinalIgnoreCase))
+            mcc,
+            new NativeSetBlockVerifier(
+                mcc,
+                new NativeSetBlockVerificationOptions
                 {
-                    throw new BackendException("方块采样不匹配。", uncertain: true);
-                }
-            },
+                    MaxAttemptsPerPlacement = 2,
+                    InitialDelay = TimeSpan.Zero,
+                    MaximumDelay = TimeSpan.Zero,
+                    DelayAsync = static (_, _) => Task.CompletedTask
+                }),
             "test-target",
             BackendStatus.Available,
             verification: BackendVerification.CreateForTesting("native-setblock"));
@@ -190,7 +292,7 @@ public sealed class SetBlockTests
 
         Assert.True(exception.Uncertain);
         Assert.Equal(1, calls.Count(name => name == "mcc_send_chat"));
-        Assert.Equal(1, calls.Count(name => name == "mcc_world_block_at"));
+        Assert.Equal(2, calls.Count(name => name == "mcc_world_block_at"));
         Assert.DoesNotContain("mcc_place_block", calls);
     }
 

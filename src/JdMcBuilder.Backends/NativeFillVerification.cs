@@ -148,14 +148,16 @@ public sealed record NativeFillVerificationResult(
 
 public sealed class NativeFillVerifier
 {
-    private readonly MccToolClient _mcc;
+    private readonly BlockReadbackVerifier _readback;
     private readonly NativeFillVerificationOptions _options;
 
     public NativeFillVerifier(
         MccToolClient mcc,
-        NativeFillVerificationOptions? options = null)
+        NativeFillVerificationOptions? options = null,
+        BlockReadbackVerifier? readback = null)
     {
-        _mcc = mcc ?? throw new ArgumentNullException(nameof(mcc));
+        ArgumentNullException.ThrowIfNull(mcc);
+        _readback = readback ?? new BlockReadbackVerifier(mcc);
         _options = options ?? new NativeFillVerificationOptions();
         _options.Validate();
     }
@@ -184,34 +186,21 @@ public sealed class NativeFillVerifier
                 {
                     verificationToken.ThrowIfCancellationRequested();
                     state.Attempts++;
-                    var result = await _mcc.WorldBlockAtAsync(
-                        state.RequestedPosition.X,
-                        state.RequestedPosition.Y,
-                        state.RequestedPosition.Z,
+                    var observation = await _readback.ReadOnceAsync(
+                        state.RequestedPosition,
                         verificationToken).ConfigureAwait(false);
-                    if (!result.TryGetBlockSample(
-                            out var actualBlock,
-                            out var returnedPosition))
+                    if (!observation.IsValid)
                     {
                         throw Fail(
                             plan,
                             states.Values,
-                            $"采样 {state.RequestedPosition} 未返回可识别的文本方块 ID。 ");
+                            observation.FailureReason ?? $"采样 {state.RequestedPosition} 结果无效。 ");
                     }
 
-                    state.LastObservedBlock = actualBlock;
-                    state.LastReturnedPosition = returnedPosition;
-                    if (returnedPosition is { } actualPosition
-                        && actualPosition != state.RequestedPosition)
-                    {
-                        throw Fail(
-                            plan,
-                            states.Values,
-                            $"采样返回坐标 {actualPosition}，但请求坐标为 {state.RequestedPosition}。 ");
-                    }
-
+                    state.LastObservedBlock = observation.BlockId;
+                    state.LastReturnedPosition = observation.ReturnedPosition;
                     if (string.Equals(
-                            actualBlock,
+                            observation.BlockId,
                             plan.ExpectedBlock,
                             StringComparison.OrdinalIgnoreCase))
                     {

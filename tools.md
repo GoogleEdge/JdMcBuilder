@@ -516,7 +516,7 @@
 - **调用示例**：
   - `mcc_send_chat(text="hello")`
   - `mcc_send_chat(text="/tp @s 0 64 0")`
-- **注意事项**：`mcc_send_chat` 成功只表示文本已发送或被队列接受；聊天/debug 中“成功填充 N 个方块”或 `/setblock` 的“更改了位于...的方块”也只是诊断观察。命令效果必须通过新的世界状态或方块读取验证，且聊天历史不是 authoritative proof。JdMcBuilder 的显式后端只发送生成的 `/setblock x y z minecraft:block`，随后用同坐标的 `mcc_world_block_at` 比较 canonical 方块 ID；它不调用 `mcc_place_block`、库存或视线工具。
+- **注意事项**：`mcc_send_chat` 成功只表示文本已发送或被队列接受；聊天/debug 中“成功填充 N 个方块”或 `/setblock` 的“更改了位于...的方块”也只是诊断观察。命令效果必须通过新的世界状态或方块读取验证，且聊天历史不是 authoritative proof。JdMcBuilder 的显式后端只发送生成的 `/setblock x y z minecraft:block`，随后用同坐标的 `mcc_world_block_at` 比较 canonical 方块 ID；首次读取可能因可见性延迟仍返回旧方块，应用可在一次发送后进行有界只读轮询，但绝不重发命令、偏移坐标或把聊天文本当作证明。持续不匹配、无法解析、坐标错误、超时、取消或传输失败仍是不确定结果。它不调用 `mcc_place_block`、库存或视线工具。
 
 ---
 

@@ -90,6 +90,74 @@ public sealed class ProbeTests
     }
 
     [Fact]
+    public async Task ProbeSetBlockPollsDelayedVisibilityAndCreatesProof()
+    {
+        var tools = ToolSet(
+            "mcc_session_status",
+            "mcc_world_state",
+            "mcc_send_chat",
+            "mcc_world_block_at");
+        var sendCount = 0;
+        var readCount = 0;
+        var readsByPosition = new Dictionary<BlockPosition, int>();
+        var fake = new FakeMcpToolInvoker(tools, (name, arguments, _) =>
+        {
+            if (name == "mcc_send_chat")
+            {
+                sendCount++;
+            }
+
+            if (name == "mcc_world_block_at")
+            {
+                readCount++;
+                var position = GetPosition(arguments);
+                var positionReadCount = readsByPosition.TryGetValue(position, out var previous)
+                    ? previous + 1
+                    : 1;
+                readsByPosition[position] = positionReadCount;
+                var block = position == new BlockPosition(10, 64, 10)
+                    ? "Stone"
+                    : position == new BlockPosition(30, 64, 30) && positionReadCount == 1
+                        ? "Air"
+                        : "Stone";
+                return Task.FromResult(Result(new
+                {
+                    x = position.X,
+                    y = position.Y,
+                    z = position.Z,
+                    material = block
+                }));
+            }
+
+            return Task.FromResult(name switch
+            {
+                "mcc_session_status" => Result(new { sessionId = "s1" }),
+                "mcc_world_state" => Result(new { dimension = "overworld" }),
+                _ => Result(new { success = true })
+            });
+        });
+        var probe = new CommandCapabilityProbe(
+            new MccToolClient(fake),
+            nativeFillVerificationOptions: new NativeFillVerificationOptions
+            {
+                MaxAttemptsPerSample = 1,
+                InitialDelay = TimeSpan.Zero,
+                MaximumDelay = TimeSpan.Zero,
+                DelayAsync = static (_, _) => Task.CompletedTask
+            },
+            nativeSetBlockVerificationOptions: FastSetBlockOptions());
+
+        var report = await probe.ProbeApprovedAsync(new BackendProbeRequest(
+            new BlockRange(new BlockPosition(10, 64, 10), new BlockPosition(10, 64, 10)),
+            new BlockRange(new BlockPosition(20, 64, 20), new BlockPosition(20, 64, 20)),
+            new BlockPosition(30, 64, 30)));
+
+        Assert.Equal(BackendStatus.Available, report.Find("native-setblock")!.Status);
+        Assert.Equal(4, sendCount);
+        Assert.Equal(4, readCount);
+    }
+
+    [Fact]
     public async Task ProbeDoesNotCreateProofWhenWriteVerificationMismatches()
     {
         var tools = ToolSet(
@@ -104,7 +172,9 @@ public sealed class ProbeTests
             "mcc_world_block_at" => Result(new { block = "minecraft:dirt" }),
             _ => Result(new { success = true })
         }));
-        var probe = new CommandCapabilityProbe(new MccToolClient(fake));
+        var probe = new CommandCapabilityProbe(
+            new MccToolClient(fake),
+            nativeSetBlockVerificationOptions: FastSetBlockOptions());
 
         var report = await probe.ProbeApprovedAsync(new BackendProbeRequest(
             new BlockRange(new BlockPosition(10, 64, 10), new BlockPosition(10, 64, 10)),
@@ -114,6 +184,15 @@ public sealed class ProbeTests
         Assert.Equal(BackendStatus.Unverified, report.Find("worldedit")!.Status);
         Assert.Null(report.Find("worldedit")!.Verification);
     }
+
+    private static NativeSetBlockVerificationOptions FastSetBlockOptions() => new()
+    {
+        MaxAttemptsPerPlacement = 2,
+        OverallTimeout = TimeSpan.FromSeconds(1),
+        InitialDelay = TimeSpan.Zero,
+        MaximumDelay = TimeSpan.Zero,
+        DelayAsync = static (_, _) => Task.CompletedTask
+    };
 
     private static IReadOnlyDictionary<string, McpToolDefinition> ToolSet(
         params string[] names) =>

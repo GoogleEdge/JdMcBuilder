@@ -144,18 +144,27 @@ public sealed class CommandCapabilityProbe
     private const long MaxProbeVolume = 4096;
     private readonly MccToolClient _mcc;
     private readonly CommandSafety _safety;
+    private readonly BlockReadbackVerifier _readback;
     private readonly NativeFillVerifier _nativeFillVerifier;
+    private readonly NativeSetBlockVerifier _nativeSetBlockVerifier;
 
     public CommandCapabilityProbe(
         MccToolClient mcc,
         CommandSafety? safety = null,
-        NativeFillVerificationOptions? nativeFillVerificationOptions = null)
+        NativeFillVerificationOptions? nativeFillVerificationOptions = null,
+        NativeSetBlockVerificationOptions? nativeSetBlockVerificationOptions = null)
     {
         _mcc = mcc ?? throw new ArgumentNullException(nameof(mcc));
         _safety = safety ?? new CommandSafety();
+        _readback = new BlockReadbackVerifier(_mcc);
         _nativeFillVerifier = new NativeFillVerifier(
             _mcc,
-            nativeFillVerificationOptions);
+            nativeFillVerificationOptions,
+            _readback);
+        _nativeSetBlockVerifier = new NativeSetBlockVerifier(
+            _readback,
+            nativeSetBlockVerificationOptions,
+            _safety);
     }
 
     public async Task<BackendProbeReport> ProbeApprovedAsync(
@@ -256,7 +265,7 @@ public sealed class CommandCapabilityProbe
             await _mcc.SendChatAsync(
                 _safety.BuildWorldEditSet(request.TestBlock),
                 cancellationToken).ConfigureAwait(false);
-            await VerifyBlockAsync(
+            await _readback.VerifyOnceAsync(
                 request.WorldEditRange.Min,
                 request.TestBlock,
                 cancellationToken).ConfigureAwait(false);
@@ -378,7 +387,7 @@ public sealed class CommandCapabilityProbe
             mutationDispatched = true;
             var response = await _mcc.SendChatAsync(command, cancellationToken)
                 .ConfigureAwait(false);
-            await VerifyBlockAsync(
+            var verification = await _nativeSetBlockVerifier.VerifyAsync(
                 request.SetBlockPosition,
                 request.TestBlock,
                 cancellationToken).ConfigureAwait(false);
@@ -389,7 +398,7 @@ public sealed class CommandCapabilityProbe
                 probedAt,
                 validity,
                 request.SetBlockPosition,
-                $"/setblock 命令已发送；MCP 返回仅作诊断（{response.ToDiagnosticText()}），并已通过独立方块采样。",
+                $"/setblock 命令已发送；MCP 返回仅作诊断（{response.ToDiagnosticText()}）；{verification.Diagnostic}",
                 true);
         }
         catch (OperationCanceledException exception)
@@ -414,38 +423,6 @@ public sealed class CommandCapabilityProbe
                 exception,
                 mutationDispatched,
                 "/setblock 探测失败");
-        }
-    }
-
-    private async Task VerifyBlockAsync(
-        BlockPosition position,
-        string expectedBlock,
-        CancellationToken cancellationToken)
-    {
-        var result = await _mcc.WorldBlockAtAsync(
-            position.X,
-            position.Y,
-            position.Z,
-            cancellationToken).ConfigureAwait(false);
-        if (!result.TryGetBlockSample(out var actualBlock, out var returnedPosition))
-        {
-            throw new BackendException(
-                $"探针方块验证无法解析：{position}，期望 {expectedBlock}，mcc_world_block_at 未返回可识别的文本方块 ID。",
-                uncertain: true);
-        }
-
-        if (returnedPosition is { } actualPosition && actualPosition != position)
-        {
-            throw new BackendException(
-                $"探针方块验证返回坐标不匹配：请求 {position}，实际返回 {actualPosition}。",
-                uncertain: true);
-        }
-
-        if (!string.Equals(actualBlock, expectedBlock, StringComparison.OrdinalIgnoreCase))
-        {
-            throw new BackendException(
-                $"探针方块验证不匹配：{position}，期望 {expectedBlock}，实际 {actualBlock}。",
-                uncertain: true);
         }
     }
 

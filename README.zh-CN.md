@@ -16,7 +16,7 @@ Windows 桌面工具：导入包含坐标和方块类型的 `mc-blueprint/v1` JS
 
 1. WorldEdit：只通过 `mcc_send_chat` 发送命令，不使用 `mcc_run_internal_command`。在已验证的当前部署中，先发送一条 `//pos`，后跟两个逗号分隔的方块向量，再发送 `//set`，例如 `//pos 1,64,1 2,64,1` 和 `//set minecraft:stone`。当前 profile 使用合并的 `//pos [pos1] [pos2...]` 形式，不是分别发送 `//pos1`、`//pos2`；该形式是当前目标服务器实际接受的命令形状，不代表所有 MCC、Leaf、Paper 或 WorldEdit 版本都相同。该命令形式已有离线回归测试，但仍必须在当前目标世界通过独立探针验证权限和真实写入；
 2. 原生 `/fill`：通过 `mcc_send_chat` 发送 `/fill`，适合没有 WorldEdit 的矩形填充。聊天/debug 中“成功地填充了 N 个方块”以及 `mcc_send_chat` 成功返回都只是观察信息，不是世界状态证明。应用会显示标准化范围、精确命令和去重后的角点，并在只读的 `mcc_world_block_at` 轮询中验证全部采样点；轮询不会重发 `/fill`、偏移坐标或自动切换后端；
-3. 原生 `/setblock`：小规模显式方块后端；每个方块通过 `mcc_send_chat` 发送一条 `/setblock x y z minecraft:block`，不依赖库存、手持物品、移动或视线。发送结果只作诊断，必须用同坐标的 `mcc_world_block_at` 独立验证。
+3. 原生 `/setblock`：小规模显式方块后端；每个方块通过 `mcc_send_chat` 发送一条 `/setblock x y z minecraft:block`，不依赖库存、手持物品、移动或视线。发送结果只作诊断，必须用同坐标的 `mcc_world_block_at` 独立验证；如果第一次读取仍是写入前的方块，应用可在不重发命令的前提下进行有界只读轮询。轮询不会偏移坐标或把聊天历史当作证明；持续不匹配、结果无法解析、返回坐标错误、超时、取消或传输失败仍是不确定结果。
 
 仅发现 `mcc_send_chat` 不代表 WorldEdit、`/fill` 或 `/setblock` 已获得权限。能力默认是“未验证”。连接后必须在界面输入三个互不重叠的测试范围/点和探针方块，点击能力验证按钮并明确确认测试世界写入；应用会分别探测 WorldEdit、原生 `/fill` 和原生 `/setblock`。只有写入返回、观察结果和 `mcc_world_block_at` 方块 ID 比较都通过的后端，才会获得带当前目标指纹和过期时间的证明；没有证明时真实施工会在确认对话框前被阻止。WorldEdit、`/fill` 和 `/setblock` 探针及施工命令均通过 `mcc_send_chat` 发送，不会改走 `mcc_run_internal_command`。
 

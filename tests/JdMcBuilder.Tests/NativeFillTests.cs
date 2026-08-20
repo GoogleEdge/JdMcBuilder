@@ -91,7 +91,7 @@ public sealed class NativeFillTests
             calls,
             call => call.Name == "mcc_send_chat"
                 && GetText(call.Arguments) == "/fill 20 64 20 21 64 20 minecraft:stone");
-        Assert.Equal(5, calls.Count(call => call.Name == "mcc_world_block_at"));
+        Assert.Equal(6, calls.Count(call => call.Name == "mcc_world_block_at"));
         Assert.Single(
             calls,
             call => call.Name == "mcc_send_chat"

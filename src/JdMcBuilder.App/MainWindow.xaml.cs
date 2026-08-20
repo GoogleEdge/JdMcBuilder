@@ -243,30 +243,11 @@ public partial class MainWindow : Window
             return;
         }
 
-        var sampleVerifier = new Func<BlockPosition, string, CancellationToken, Task>(async (position, expectedBlock, cancellationToken) =>
-        {
-            var result = await mcc.WorldBlockAtAsync(position.X, position.Y, position.Z, cancellationToken);
-            if (!result.TryGetBlockSample(out var actualBlock, out var returnedPosition))
-            {
-                throw new BackendException(
-                    $"施工后方块验证无法解析：{position}，期望 {expectedBlock}，mcc_world_block_at 未返回可识别的文本方块 ID。",
-                    uncertain: true);
-            }
-
-            if (returnedPosition is { } actualPosition && actualPosition != position)
-            {
-                throw new BackendException(
-                    $"施工后方块验证返回坐标不匹配：请求 {position}，实际返回 {actualPosition}。",
-                    uncertain: true);
-            }
-
-            if (!string.Equals(actualBlock, expectedBlock, StringComparison.OrdinalIgnoreCase))
-            {
-                throw new BackendException(
-                    $"施工后方块验证不匹配：{position}，期望 {expectedBlock}，实际 {actualBlock}。",
-                    uncertain: true);
-            }
-        });
+        var readback = new BlockReadbackVerifier(mcc);
+        var sampleVerifier = new Func<BlockPosition, string, CancellationToken, Task>(
+            (position, expectedBlock, cancellationToken) =>
+                readback.VerifyOnceAsync(position, expectedBlock, cancellationToken));
+        var nativeSetBlockVerifier = new NativeSetBlockVerifier(mcc);
         var worldEditVerification = _backendProbeReport?.Find("worldedit")?.Verification;
         var nativeFillVerification = _backendProbeReport?.Find("native-fill")?.Verification;
         var setBlockVerification = _backendProbeReport?.Find("native-setblock")?.Verification;
@@ -281,7 +262,7 @@ public partial class MainWindow : Window
             verification: nativeFillVerification);
         var setBlock = new NativeSetBlockBackend(
             mcc,
-            sampleVerifier,
+            nativeSetBlockVerifier,
             targetFingerprint!,
             setBlockStatus,
             verification: setBlockVerification);
