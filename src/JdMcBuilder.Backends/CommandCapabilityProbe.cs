@@ -145,6 +145,7 @@ public sealed class CommandCapabilityProbe
     private readonly MccToolClient _mcc;
     private readonly CommandSafety _safety;
     private readonly BlockReadbackVerifier _readback;
+    private readonly WorldEditVerifier _worldEditVerifier;
     private readonly NativeFillVerifier _nativeFillVerifier;
     private readonly NativeSetBlockVerifier _nativeSetBlockVerifier;
 
@@ -152,11 +153,16 @@ public sealed class CommandCapabilityProbe
         MccToolClient mcc,
         CommandSafety? safety = null,
         NativeFillVerificationOptions? nativeFillVerificationOptions = null,
-        NativeSetBlockVerificationOptions? nativeSetBlockVerificationOptions = null)
+        NativeSetBlockVerificationOptions? nativeSetBlockVerificationOptions = null,
+        WorldEditVerificationOptions? worldEditVerificationOptions = null)
     {
         _mcc = mcc ?? throw new ArgumentNullException(nameof(mcc));
         _safety = safety ?? new CommandSafety();
         _readback = new BlockReadbackVerifier(_mcc);
+        _worldEditVerifier = new WorldEditVerifier(
+            _readback,
+            worldEditVerificationOptions,
+            _safety);
         _nativeFillVerifier = new NativeFillVerifier(
             _mcc,
             nativeFillVerificationOptions,
@@ -265,7 +271,7 @@ public sealed class CommandCapabilityProbe
             await _mcc.SendChatAsync(
                 _safety.BuildWorldEditSet(request.TestBlock),
                 cancellationToken).ConfigureAwait(false);
-            await _readback.VerifyOnceAsync(
+            await _worldEditVerifier.VerifyAsync(
                 request.WorldEditRange.Min,
                 request.TestBlock,
                 cancellationToken).ConfigureAwait(false);

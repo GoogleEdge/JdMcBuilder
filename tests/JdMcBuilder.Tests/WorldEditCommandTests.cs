@@ -72,6 +72,113 @@ public sealed class WorldEditCommandTests
     }
 
     [Fact]
+    public async Task BackendPollsDelayedWorldEditVisibilityWithoutResendingCommands()
+    {
+        var tools = ToolSet("mcc_send_chat", "mcc_world_block_at");
+        var chatPayloads = new List<string>();
+        var readCount = 0;
+        var fake = new FakeMcpToolInvoker(tools, (name, arguments, _) =>
+        {
+            if (name == "mcc_send_chat")
+            {
+                chatPayloads.Add(GetText(arguments));
+                return Task.FromResult(Result(new { success = true }));
+            }
+
+            readCount++;
+            var position = GetPosition(arguments);
+            return Task.FromResult(Result(new
+            {
+                x = position.X,
+                y = position.Y,
+                z = position.Z,
+                material = readCount == 1 ? "Air" : "Stone"
+            }));
+        });
+        var readback = new BlockReadbackVerifier(new MccToolClient(fake));
+        var backend = new WorldEditCommandBackend(
+            new MccToolClient(fake),
+            (position, block, cancellationToken) => new WorldEditVerifier(
+                readback,
+                new WorldEditVerificationOptions
+                {
+                    MaxAttempts = 2,
+                    OverallTimeout = TimeSpan.FromSeconds(1),
+                    InitialDelay = TimeSpan.Zero,
+                    MaximumDelay = TimeSpan.Zero,
+                    DelayAsync = static (_, _) => Task.CompletedTask
+                }).VerifyAsync(position, block, cancellationToken),
+            BackendStatus.Available,
+            verification: BackendVerification.CreateForTesting("worldedit"));
+        var batch = new FillBatch(
+            "phase/fill/batch-0000",
+            "phase",
+            "fill",
+            new BlockRange(new BlockPosition(1, 64, 2), new BlockPosition(3, 65, 4)),
+            "minecraft:stone");
+
+        var result = await backend.ExecuteAsync(batch);
+
+        Assert.True(result.Succeeded);
+        Assert.Equal(["//pos 1,64,2 3,65,4", "//set minecraft:stone"], chatPayloads);
+        Assert.Equal(2, readCount);
+    }
+
+    [Fact]
+    public async Task BackendLeavesPersistentWorldEditMismatchUncertainWithoutRetryingCommands()
+    {
+        var tools = ToolSet("mcc_send_chat", "mcc_world_block_at");
+        var chatPayloads = new List<string>();
+        var readCount = 0;
+        var fake = new FakeMcpToolInvoker(tools, (name, arguments, _) =>
+        {
+            if (name == "mcc_send_chat")
+            {
+                chatPayloads.Add(GetText(arguments));
+                return Task.FromResult(Result(new { success = true }));
+            }
+
+            readCount++;
+            var position = GetPosition(arguments);
+            return Task.FromResult(Result(new
+            {
+                x = position.X,
+                y = position.Y,
+                z = position.Z,
+                material = "Air"
+            }));
+        });
+        var readback = new BlockReadbackVerifier(new MccToolClient(fake));
+        var backend = new WorldEditCommandBackend(
+            new MccToolClient(fake),
+            (position, block, cancellationToken) => new WorldEditVerifier(
+                readback,
+                new WorldEditVerificationOptions
+                {
+                    MaxAttempts = 2,
+                    OverallTimeout = TimeSpan.FromSeconds(1),
+                    InitialDelay = TimeSpan.Zero,
+                    MaximumDelay = TimeSpan.Zero,
+                    DelayAsync = static (_, _) => Task.CompletedTask
+                }).VerifyAsync(position, block, cancellationToken),
+            BackendStatus.Available,
+            verification: BackendVerification.CreateForTesting("worldedit"));
+        var batch = new FillBatch(
+            "phase/fill/batch-0000",
+            "phase",
+            "fill",
+            new BlockRange(new BlockPosition(1, 64, 2), new BlockPosition(3, 65, 4)),
+            "minecraft:stone");
+
+        var exception = await Assert.ThrowsAsync<BackendException>(() => backend.ExecuteAsync(batch));
+
+        Assert.True(exception.Uncertain);
+        Assert.Equal(["//pos 1,64,2 3,65,4", "//set minecraft:stone"], chatPayloads);
+        Assert.Equal(2, readCount);
+        Assert.Contains("最后实际 minecraft:air", exception.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public async Task ProbeSendsMccWorldEditCommandsBeforeObservingResult()
     {
         var tools = ToolSet(

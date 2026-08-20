@@ -90,6 +90,128 @@ public sealed class ProbeTests
     }
 
     [Fact]
+    public async Task ProbeWorldEditPollsDelayedVisibilityWithoutResendingCommands()
+    {
+        var tools = ToolSet(
+            "mcc_session_status",
+            "mcc_world_state",
+            "mcc_send_chat",
+            "mcc_world_block_at");
+        var sendCount = 0;
+        var chatCommands = new List<string>();
+        var readsByPosition = new Dictionary<BlockPosition, int>();
+        var fake = new FakeMcpToolInvoker(tools, (name, arguments, _) =>
+        {
+            if (name == "mcc_send_chat")
+            {
+                sendCount++;
+                chatCommands.Add(GetText(arguments));
+                return Task.FromResult(Result(new { success = true }));
+            }
+
+            if (name == "mcc_world_block_at")
+            {
+                var position = GetPosition(arguments);
+                var positionReadCount = readsByPosition.TryGetValue(position, out var previous)
+                    ? previous + 1
+                    : 1;
+                readsByPosition[position] = positionReadCount;
+                return Task.FromResult(Result(new
+                {
+                    x = position.X,
+                    y = position.Y,
+                    z = position.Z,
+                    material = position == new BlockPosition(10, 64, 10)
+                        && positionReadCount == 1
+                        ? "Air"
+                        : "Stone"
+                }));
+            }
+
+            return Task.FromResult(name switch
+            {
+                "mcc_session_status" => Result(new { sessionId = "s1" }),
+                "mcc_world_state" => Result(new { dimension = "overworld" }),
+                _ => Result(new { success = true })
+            });
+        });
+        var probe = new CommandCapabilityProbe(
+            new MccToolClient(fake),
+            worldEditVerificationOptions: FastWorldEditOptions());
+
+        var report = await probe.ProbeApprovedAsync(new BackendProbeRequest(
+            new BlockRange(new BlockPosition(10, 64, 10), new BlockPosition(10, 64, 10)),
+            new BlockRange(new BlockPosition(20, 64, 20), new BlockPosition(20, 64, 20)),
+            new BlockPosition(30, 64, 30)));
+
+        Assert.Equal(BackendStatus.Available, report.Find("worldedit")!.Status);
+        Assert.Equal(4, sendCount);
+        Assert.Equal(
+            ["//pos 10,64,10 10,64,10", "//set minecraft:stone"],
+            chatCommands.Take(2).ToArray());
+        Assert.Equal(2, readsByPosition[new BlockPosition(10, 64, 10)]);
+        Assert.Equal(1, readsByPosition[new BlockPosition(20, 64, 20)]);
+        Assert.Equal(1, readsByPosition[new BlockPosition(30, 64, 30)]);
+    }
+
+    [Fact]
+    public async Task ProbeWorldEditPersistentMismatchDoesNotCreateProofOrResend()
+    {
+        var tools = ToolSet(
+            "mcc_session_status",
+            "mcc_world_state",
+            "mcc_send_chat",
+            "mcc_world_block_at");
+        var sendCount = 0;
+        var readCount = 0;
+        var fake = new FakeMcpToolInvoker(tools, (name, arguments, _) =>
+        {
+            if (name == "mcc_send_chat")
+            {
+                sendCount++;
+                return Task.FromResult(Result(new { success = true }));
+            }
+
+            if (name == "mcc_world_block_at")
+            {
+                readCount++;
+                var position = GetPosition(arguments);
+                return Task.FromResult(Result(new
+                {
+                    x = position.X,
+                    y = position.Y,
+                    z = position.Z,
+                    material = "Air"
+                }));
+            }
+
+            return Task.FromResult(name switch
+            {
+                "mcc_session_status" => Result(new { sessionId = "s1" }),
+                "mcc_world_state" => Result(new { dimension = "overworld" }),
+                _ => Result(new { success = true })
+            });
+        });
+        var probe = new CommandCapabilityProbe(
+            new MccToolClient(fake),
+            worldEditVerificationOptions: FastWorldEditOptions());
+
+        var report = await probe.ProbeApprovedAsync(new BackendProbeRequest(
+            new BlockRange(new BlockPosition(10, 64, 10), new BlockPosition(10, 64, 10)),
+            new BlockRange(new BlockPosition(20, 64, 20), new BlockPosition(20, 64, 20)),
+            new BlockPosition(30, 64, 30)));
+        var worldEdit = report.Find("worldedit")!;
+
+        Assert.Equal(BackendStatus.Unverified, worldEdit.Status);
+        Assert.Null(worldEdit.Verification);
+        Assert.True(worldEdit.WriteMayHaveBeenDispatched);
+        Assert.Equal(2, sendCount);
+        Assert.Equal(2, readCount);
+        Assert.Contains("最后实际 minecraft:air", worldEdit.Reason, StringComparison.Ordinal);
+        Assert.DoesNotContain("/fill", report.Results.Select(result => result.Reason));
+    }
+
+    [Fact]
     public async Task ProbeSetBlockPollsDelayedVisibilityAndCreatesProof()
     {
         var tools = ToolSet(
@@ -194,6 +316,15 @@ public sealed class ProbeTests
         DelayAsync = static (_, _) => Task.CompletedTask
     };
 
+    private static WorldEditVerificationOptions FastWorldEditOptions() => new()
+    {
+        MaxAttempts = 2,
+        OverallTimeout = TimeSpan.FromSeconds(1),
+        InitialDelay = TimeSpan.Zero,
+        MaximumDelay = TimeSpan.Zero,
+        DelayAsync = static (_, _) => Task.CompletedTask
+    };
+
     private static IReadOnlyDictionary<string, McpToolDefinition> ToolSet(
         params string[] names) =>
         names.ToDictionary(
@@ -203,6 +334,10 @@ public sealed class ProbeTests
 
     private static McpToolDefinition Definition(string name) =>
         new(name, null, JsonSerializer.SerializeToElement(new { type = "object" }));
+
+    private static string GetText(object? arguments) =>
+        JsonSerializer.SerializeToElement(arguments).GetProperty("text").GetString()
+            ?? throw new InvalidOperationException("缺少 text 参数。");
 
     private static BlockPosition GetPosition(object? arguments)
     {

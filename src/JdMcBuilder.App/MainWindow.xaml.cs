@@ -269,9 +269,10 @@ public partial class MainWindow : Window
         }
 
         var readback = new BlockReadbackVerifier(mcc);
+        var worldEditVerifier = new WorldEditVerifier(readback);
         var sampleVerifier = new Func<BlockPosition, string, CancellationToken, Task>(
             (position, expectedBlock, cancellationToken) =>
-                readback.VerifyOnceAsync(position, expectedBlock, cancellationToken));
+                worldEditVerifier.VerifyAsync(position, expectedBlock, cancellationToken));
         var nativeSetBlockVerifier = new NativeSetBlockVerifier(mcc);
         var worldEditVerification = _backendProbeReport?.Find("worldedit")?.Verification;
         var nativeFillVerification = _backendProbeReport?.Find("native-fill")?.Verification;
