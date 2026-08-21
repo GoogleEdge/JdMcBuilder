@@ -52,12 +52,32 @@ public static class TargetFingerprintBuilder
         ArgumentNullException.ThrowIfNull(sessionStatus);
         ArgumentNullException.ThrowIfNull(worldState);
 
+        var sessionIdentity = ExtractStableIdentity(
+            sessionStatus,
+            "session").ToArray();
+        if (sessionIdentity.Length == 0)
+        {
+            throw new BackendException(
+                "目标身份预检失败：mcc_session_status 未返回可识别的稳定 session identity；拒绝生成目标指纹。",
+                uncertain: false);
+        }
+
+        var worldIdentity = ExtractStableIdentity(
+            worldState,
+            "world").ToArray();
+        if (worldIdentity.Length == 0)
+        {
+            throw new BackendException(
+                "目标身份预检失败：mcc_world_state 未返回可识别的稳定 world identity；拒绝生成目标指纹。",
+                uncertain: false);
+        }
+
         var identity = new List<string>
         {
             mcc.Endpoint?.GetLeftPart(UriPartial.Path) ?? "unknown-endpoint"
         };
-        identity.AddRange(ExtractStableIdentity(sessionStatus, "session"));
-        identity.AddRange(ExtractStableIdentity(worldState, "world"));
+        identity.AddRange(sessionIdentity);
+        identity.AddRange(worldIdentity);
         if (serverInfo is not null)
         {
             identity.AddRange(ExtractStableIdentity(serverInfo, "server"));
@@ -114,26 +134,6 @@ public static class TargetFingerprintBuilder
             if (result.TryGetString(out var value, name))
             {
                 yield return $"{prefix}:{name.ToLowerInvariant()}={value.Trim()}";
-            }
-        }
-
-        var hasStableValue = false;
-        foreach (var name in names)
-        {
-            if (result.TryGetString(out _, name))
-            {
-                hasStableValue = true;
-                break;
-            }
-        }
-
-        if (!hasStableValue)
-        {
-            var diagnostic = result.ToDiagnosticText().Trim();
-            if (!string.IsNullOrWhiteSpace(diagnostic))
-            {
-                var digest = SHA256.HashData(Encoding.UTF8.GetBytes(diagnostic));
-                yield return $"{prefix}:observation={Convert.ToHexString(digest).ToLowerInvariant()}";
             }
         }
     }
@@ -264,16 +264,25 @@ public sealed class CommandCapabilityProbe
         var mutationDispatched = false;
         try
         {
+            var verificationPlan = BlockRangeVerificationPlan.Create(
+                request.WorldEditRange,
+                request.TestBlock,
+                _safety);
+            var selectionCommand = _safety.BuildWorldEditSelection(
+                verificationPlan.Range);
+            var setCommand = _safety.BuildWorldEditSet(
+                verificationPlan.ExpectedBlock);
+
             await _mcc.SendChatAsync(
-                _safety.BuildWorldEditSelection(request.WorldEditRange),
+                selectionCommand,
                 cancellationToken).ConfigureAwait(false);
             mutationDispatched = true;
             await _mcc.SendChatAsync(
-                _safety.BuildWorldEditSet(request.TestBlock),
+                setCommand,
                 cancellationToken).ConfigureAwait(false);
-            await _worldEditVerifier.VerifyAsync(
-                request.WorldEditRange.Min,
-                request.TestBlock,
+            var verification = await _worldEditVerifier.VerifyAsync(
+                verificationPlan.Range,
+                verificationPlan.ExpectedBlock,
                 cancellationToken).ConfigureAwait(false);
 
             return Available(
@@ -281,8 +290,8 @@ public sealed class CommandCapabilityProbe
                 targetFingerprint,
                 probedAt,
                 validity,
-                request.WorldEditRange.Min,
-                "WorldEdit 选区、set 命令返回和方块采样均通过。",
+                verificationPlan.Range.Min,
+                $"WorldEdit 选区、set 命令返回和角点抽样均通过。{Environment.NewLine}{verification.Diagnostic}",
                 true);
         }
         catch (OperationCanceledException exception)

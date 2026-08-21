@@ -313,7 +313,7 @@ profile = "configurable"
 
 能力发现和施工调用分离。`tools/list`、状态查询和方块查询可能可用，不代表写入工具有权限。
 
-当前实现的能力探测契约：能力探针必须由用户在测试/备份世界中明确确认，并为 WorldEdit、原生 `/fill`、原生 `/setblock` 分别提供互不重叠的测试范围/点和探针方块。探测先调用 `mcc_session_status`、`mcc_world_state`（可选 `mcc_server_info`）生成目标指纹，再按后端独立执行写入，并以 `mcc_world_block_at` 的新鲜方块 ID 采样作为权威验证。原生 `/fill` 可在一次命令发送后对标准化范围的去重角点进行有界只读轮询，以处理短暂可见性延迟；`mcc_chat_history` 若存在只能作为可选诊断，不能证明当前命令或目标坐标，聊天/debug 中“成功填充 N 个方块”同样不能证明世界状态。原生 `/setblock` 对每个显式 placement 只发送一次 `/setblock`，并读取同一坐标；首个可解析但不匹配的旧值允许触发有界只读轮询，服务器返回的“更改了位于...的方块”等文本仅作诊断，不能替代采样。只有该后端自己的写入和全部独立采样均成功时，才生成带后端 ID、目标指纹、验证时间和过期时间的 `BackendVerification`；任何权限错误、取消、超时、结果缺失、错误返回坐标或采样不匹配都不生成证明。探测失败且写入可能已发送时必须提示人工检查探针位置，不得自动重放 `/fill`、`/setblock`，偏移坐标或静默切换后端。目标指纹不匹配或过期时，真实施工 gate 继续保持关闭。
+当前实现的能力探测契约：能力探针必须由用户在测试/备份世界中明确确认，并为 WorldEdit、原生 `/fill`、原生 `/setblock` 分别提供互不重叠的测试范围/点和探针方块。探测先调用 `mcc_session_status`、`mcc_world_state`（可选 `mcc_server_info`）生成目标指纹；session 和 world 响应必须各自至少包含一个应用明确识别的稳定 identity 字段，空对象、只有未知字段或通用 observation hash 不得生成目标指纹，且必须在任何写入前 fail-closed。然后才按后端独立执行写入，并以 `mcc_world_block_at` 的新鲜方块 ID 采样作为权威验证。WorldEdit 和原生 `/fill` 都在各自的一次写入发送后，对标准化范围的 1/2/4/8 个去重角点进行有界只读轮询，以处理短暂可见性延迟；这只是角点抽样，不是对区域内部全部方块的完整扫描。`mcc_chat_history` 若存在只能作为可选诊断，不能证明当前命令或目标坐标，聊天/debug 中“成功填充 N 个方块”同样不能证明世界状态。原生 `/setblock` 对每个显式 placement 只发送一次 `/setblock`，并读取同一坐标；首个可解析但不匹配的旧值允许触发有界只读轮询，服务器返回的“更改了位于...的方块”等文本仅作诊断，不能替代采样。只有该后端自己的写入和全部独立采样均成功时，才生成带后端 ID、目标指纹、验证时间和过期时间的 `BackendVerification`；任何权限错误、取消、超时、结果缺失、错误返回坐标或采样不匹配都不生成证明。探测失败且写入可能已发送时必须提示人工检查探针位置，不得自动重放 `//set`、`/fill`、`/setblock`，偏移坐标或静默切换后端。目标指纹不匹配或过期时，真实施工 gate 继续保持关闭。能力探针证明后端现在可用，但不能证明此前不确定批次当时是否已经完成，也不得修改或清除旧 journal 的不确定状态。
 
 ## 9. 安全与恢复
 
@@ -344,7 +344,11 @@ profile = "configurable"
 }
 ```
 
-重启后只允许从成功批次继续。对于经 `mcc_send_chat` 发送的 WorldEdit `//set`、`/fill` 或 `/setblock`，如果返回结果不确定，整个批次进入 `uncertain`，必须先用 `mcc_world_block_at`/扫描工具抽样或让用户重新确认，而不是自动重放；`/setblock` batch 不得只重放尚未发送的剩余 placement。
+重启后只允许从成功批次继续。对于经 `mcc_send_chat` 发送的 WorldEdit `//set`、`/fill` 或 `/setblock`，如果返回结果不确定，整个批次进入 `uncertain`，必须先用 `mcc_world_block_at` 新鲜抽样核验，而不是自动重放；`/setblock` batch 不得只重放尚未发送的剩余 placement。只要 journal 中存在任何不确定批次，执行器就在选择后端、保存新的 in-flight checkpoint 或调用任何世界工具前全局停止，不能先执行位于该批次之前的 pending batch。
+
+相同 blueprint hash 的不确定批次不能通过“归档旧 journal”清除；归档只处理不同 blueprint hash 的陈旧 session。专用“核验并解决不确定批次”动作必须从当前 reviewed blueprint 重新规划出的 `FillBatch` 取得 batch ID、标准化范围和 canonical 期望方块，不信任 UI 自由文本、`LastError` 或旧聊天记录。它只调用 discovered schema 精确声明 `x`/`y`/`z` integer 参数、required 集合精确为 `x`/`y`/`z`，且不允许额外输入参数的 `mcc_world_block_at`，对范围的去重角点进行有限只读轮询；不得调用能力探针，也不得发送或重放旧 `//pos`、`//set`、`/fill` 或 `/setblock`。角点抽样只证明这些样本点，不得在 UI、日志或报告中描述成完整区域扫描。
+
+恢复动作在抽样前后都必须重新检查 blueprint hash、目标指纹和连接 generation/reference。journal 提交必须绑定抽样前读取的原始文件 SHA-256 revision、session/hash/backend/target identity 和 completed/uncertain 状态，并在提交前重读验证。成功仅把显式目标 batch 从 `uncertain` 移入 `completed` 并清空 `lastError`，不自动继续施工；不提供 `uncertain` 转回 pending 的路径。mismatch、错误返回坐标、malformed response、timeout、取消、目标/蓝图/连接变化或 CAS 冲突都必须保持活动 journal 的原始 bytes/state 不变。当前 path gate 只协调同进程操作，不是跨进程 OS lock；如果未来支持多个应用实例共享 journal，必须另加进程间锁。
 
 WorldEdit `//undo` 是当前目标部署 profile 中的可选恢复动作；若未来经 `mcc_send_chat` 实现，应按当前目标验证。无论采用何种入口，都必须确认同一玩家历史未被其他操作污染，且插件返回成功；应用不能宣称它拥有通用事务回滚。
 
@@ -402,6 +406,8 @@ WorldEdit `//undo` 是当前目标部署 profile 中的可选恢复动作；若�
 - fake MCP server 下的成功、拒绝、断连、重试和不确定结果；
 - WorldEdit 命令模板参数化，禁止命令注入；
 - journal 写入、崩溃恢复和稳定 operation ID；
+- 不确定批次的 planned-range 角点核验、前后目标身份检查和 snapshot revision/state CAS；任一核验或冲突失败时 journal 原始 bytes 不变；
+- journal 含后续不确定批次时执行器全局阻止，断言此前 pending batch 也产生零后端调用；
 - Dry Run 不调用任何写入工具；
 - token 不出现在日志、错误和导出报告。
 
@@ -409,16 +415,21 @@ WorldEdit `//undo` 是当前目标部署 profile 中的可选恢复动作；若�
 
 按以下顺序进行，禁止首次就在主世界执行：
 
-1. MCC 本地测试世界连接和工具发现；
-2. 1×1 或 3×3 蓝图的逐块测试；
-3. 10×10 `fill` 测试；
-4. 通过 `mcc_send_chat` 进行 WorldEdit `//pos x1,y1,z1 x2,y2,z2` + `//set` 测试；
-5. 故意断开连接，验证断点恢复；
-6. 越界蓝图，确认被阻止；
-7. 一个教学楼/运动场分区；
-8. 采样查询或截图确认结果，再扩展到完整校园。
+1. MCC 测试/备份世界连接、初始化、工具发现和目标身份读取；
+2. 读取所有将使用的测试坐标的原始方块并保存恢复计划；
+3. 通过 `mcc_send_chat` 发送一个可恢复的 `/setblock`，独立读回同点；
+4. 通过 `mcc_send_chat` 发送一个可恢复的 `/fill`，独立读回全部去重角点；
+5. 通过 `mcc_send_chat` 发送一次 WorldEdit `//pos x1,y1,z1 x2,y2,z2` 和一次 `//set`，独立读回全部去重角点；
+6. 构造临时同 hash `uncertain` journal，仅以新鲜 `mcc_world_block_at` 角点抽样验证 `uncertain → completed` CAS，断言恢复阶段没有任何 chat/mutation 调用；
+7. 逐点恢复第 2 步记录的原方块，并再次独立读回确认；
+8. 故意断开连接，验证断点恢复；
+9. 越界蓝图，确认被阻止；
+10. 一个教学楼/运动场分区；
+11. 采样查询或截图确认结果，再扩展到完整校园。
 
-验收通过条件：没有未确认的越界写入；执行阶段、批次、方块统计和错误可追溯；WorldEdit 不可用时应用明确降级而不是假装成功；大区域不因逐块调用导致不可接受的调用数量。
+每个真实写入命令只允许发送一次。如果响应 timeout、丢失、取消或结果不确定，立即停止该路径并人工检查；即使测试世界可恢复，也不得自动重发。恢复原方块本身是新的显式写入动作，只有原始状态已成功读取且目标身份仍一致时才执行，并在恢复后再次读回。测试日志不得记录 bearer token、Authorization header 或可复用的敏感 session 值。
+
+验收通过条件：没有未确认的越界写入；所有测试位置已恢复并经独立读回确认，或明确列出仍需人工处理的位置；执行阶段、批次、方块统计和错误可追溯；WorldEdit 不可用时应用明确降级而不是假装成功；大区域不因逐块调用导致不可接受的调用数量。
 
 ## 13. 交付阶段
 

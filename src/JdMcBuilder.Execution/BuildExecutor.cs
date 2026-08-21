@@ -127,6 +127,14 @@ public sealed class BuildExecutor
 
         if (_options.DryRun)
         {
+            var existing = await _journal.LoadUnderExecutionAsync(cancellationToken)
+                .ConfigureAwait(false);
+            if (existing?.UncertainBatches.Count > 0)
+            {
+                throw new InvalidOperationException(
+                    $"journal 包含不确定批次：{string.Join(", ", existing.UncertainBatches.OrderBy(item => item, StringComparer.Ordinal))}；Dry Run 不会覆盖或清除该状态。 ");
+            }
+
             var dryRun = BuildJournalState.Create(blueprintHash, "dry-run", _options.TargetFingerprint);
             await _journal.SaveUnderExecutionAsync(dryRun, cancellationToken).ConfigureAwait(false);
             var dryRunCompleted = 0L;
@@ -183,6 +191,12 @@ public sealed class BuildExecutor
         {
             throw new InvalidOperationException(
                 $"journal 同时将批次标记为已完成和不确定：{string.Join(", ", contradictory)}；拒绝自动恢复。 ");
+        }
+
+        if (uncertainIds.Count > 0)
+        {
+            throw new InvalidOperationException(
+                $"journal 包含不确定批次：{string.Join(", ", uncertainIds.OrderBy(item => item, StringComparer.Ordinal))}；必须先完成只读核验，未调用任何后端。 ");
         }
 
         var completed = completedIds.Aggregate(

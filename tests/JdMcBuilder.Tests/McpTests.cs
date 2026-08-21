@@ -208,6 +208,44 @@ public sealed class McpTests
     }
 
     [Fact]
+    public void ToolResultRejectsConflictingBlockAliasesInOneSample()
+    {
+        var result = new McpToolResult(
+            [],
+            false,
+            JsonSerializer.SerializeToElement(new
+            {
+                x = 1,
+                y = 64,
+                z = 3,
+                material = "Stone",
+                block = "Dirt"
+            }));
+
+        Assert.False(result.TryGetBlockSample(out _, out _));
+    }
+
+    [Fact]
+    public void ToolResultAcceptsEquivalentBlockAliasesInOneSample()
+    {
+        var result = new McpToolResult(
+            [],
+            false,
+            JsonSerializer.SerializeToElement(new
+            {
+                x = 1,
+                y = 64,
+                z = 3,
+                material = "Stone",
+                block = "minecraft:stone"
+            }));
+
+        Assert.True(result.TryGetBlockSample(out var block, out var position));
+        Assert.Equal("minecraft:stone", block);
+        Assert.Equal(new BlockPosition(1, 64, 3), position);
+    }
+
+    [Fact]
     public void ToolResultDoesNotInheritWrapperCoordinatesIntoBareContentJson()
     {
         var result = new McpToolResult(

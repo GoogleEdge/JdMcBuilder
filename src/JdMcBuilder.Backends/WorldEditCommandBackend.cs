@@ -7,18 +7,18 @@ public sealed class WorldEditCommandBackend : IBuildBackend
 {
     private readonly MccToolClient _mcc;
     private readonly CommandSafety _safety;
-    private readonly Func<BlockPosition, string, CancellationToken, Task> _verifySample;
+    private readonly Func<BlockRange, string, CancellationToken, Task<BlockRangeVerificationResult>> _verifyRange;
 
     public WorldEditCommandBackend(
         MccToolClient mcc,
-        Func<BlockPosition, string, CancellationToken, Task> verifySample,
+        Func<BlockRange, string, CancellationToken, Task<BlockRangeVerificationResult>> verifyRange,
         BackendStatus status = BackendStatus.Unverified,
         CommandSafety? safety = null,
         BackendVerification? verification = null)
     {
         _mcc = mcc ?? throw new ArgumentNullException(nameof(mcc));
         _safety = safety ?? new CommandSafety();
-        _verifySample = verifySample ?? throw new ArgumentNullException(nameof(verifySample));
+        _verifyRange = verifyRange ?? throw new ArgumentNullException(nameof(verifyRange));
         Capabilities = new BackendCapabilities(
             "worldedit",
             "WorldEdit 命令",
@@ -43,16 +43,32 @@ public sealed class WorldEditCommandBackend : IBuildBackend
             throw new BackendException("WorldEdit 首版只支持 FillBatch；显式方块请使用 /setblock 后端或未来 schematic 后端。", uncertain: false);
         }
 
+        // Validate every deterministic local input before the first mutation.
+        var verificationPlan = BlockRangeVerificationPlan.Create(
+            fill.Range,
+            fill.Block,
+            _safety);
+        var selectionCommand = _safety.BuildWorldEditSelection(verificationPlan.Range);
+        var setCommand = _safety.BuildWorldEditSet(verificationPlan.ExpectedBlock);
         var calls = new List<string>();
         var mutationDispatched = false;
         try
         {
-            await SendAsync(_safety.BuildWorldEditSelection(fill.Range), calls, cancellationToken).ConfigureAwait(false);
+            await SendAsync(selectionCommand, calls, cancellationToken).ConfigureAwait(false);
             mutationDispatched = true;
-            await SendAsync(_safety.BuildWorldEditSet(fill.Block), calls, cancellationToken).ConfigureAwait(false);
-            await _verifySample(fill.Range.Min, fill.Block, cancellationToken).ConfigureAwait(false);
+            await SendAsync(setCommand, calls, cancellationToken).ConfigureAwait(false);
+            var verification = await _verifyRange(
+                verificationPlan.Range,
+                verificationPlan.ExpectedBlock,
+                cancellationToken).ConfigureAwait(false);
 
-            return new BackendOperationResult(batch.BatchId, true, false, "WorldEdit 区域填充命令已发送并完成验证。", fill.BlockCount, calls);
+            return new BackendOperationResult(
+                batch.BatchId,
+                true,
+                false,
+                $"WorldEdit 区域填充命令已发送并完成角点抽样验证。{Environment.NewLine}{verification.Diagnostic}",
+                fill.BlockCount,
+                calls);
         }
         catch (McpException exception)
         {

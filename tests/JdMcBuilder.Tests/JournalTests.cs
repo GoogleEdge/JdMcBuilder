@@ -1,3 +1,4 @@
+using JdMcBuilder.Core.Blueprint;
 using JdMcBuilder.Execution;
 
 namespace JdMcBuilder.Tests;
@@ -139,6 +140,233 @@ public sealed class JournalTests
     }
 
     [Fact]
+    public async Task ResolveUncertainBatchMovesOnlyNamedBatchAfterFreshCornerConfirmation()
+    {
+        var directory = Path.Combine(
+            Path.GetTempPath(),
+            $"jdmc-resolve-{Guid.NewGuid():N}");
+        var path = Path.Combine(directory, "build-journal.json");
+        try
+        {
+            var journal = new BuildJournal(path);
+            var target = "site-roads/road-edge-001/batch-0000";
+            var state = new BuildJournalState(
+                "session-1",
+                "sha256:test",
+                "minecraft:overworld",
+                "worldedit",
+                ["already/done/batch-0000"],
+                [target, "other/uncertain/batch-0000"],
+                "response lost",
+                "target-1");
+            await journal.SaveAsync(state);
+            var snapshot = await journal.ReadSnapshotAsync();
+            var confirmation = Confirmation(snapshot!.State, target);
+
+            var result = await journal.ResolveUncertainBatchAsync(
+                snapshot,
+                "sha256:test",
+                confirmation);
+
+            Assert.True(result.Resolved);
+            Assert.Equal(
+                ["already/done/batch-0000", target],
+                result.State!.CompletedBatches);
+            Assert.Equal(
+                ["other/uncertain/batch-0000"],
+                result.State.UncertainBatches);
+            Assert.Null(result.State.LastError);
+            Assert.Equal(state.SessionId, result.State.SessionId);
+            Assert.Equal(state.Dimension, result.State.Dimension);
+            Assert.Equal(state.BackendId, result.State.BackendId);
+            Assert.Equal(state.TargetFingerprint, result.State.TargetFingerprint);
+        }
+        finally
+        {
+            Directory.Delete(directory, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task ResolveUncertainBatchRejectsChangedRevisionWithoutRewritingBytes()
+    {
+        var directory = Path.Combine(
+            Path.GetTempPath(),
+            $"jdmc-resolve-conflict-{Guid.NewGuid():N}");
+        var path = Path.Combine(directory, "build-journal.json");
+        try
+        {
+            var journal = new BuildJournal(path);
+            const string target = "site-roads/road-edge-001/batch-0000";
+            var state = BuildJournalState.Create(
+                "sha256:test",
+                "worldedit",
+                "target-1") with
+            {
+                UncertainBatches = [target],
+                LastError = "response lost"
+            };
+            await journal.SaveAsync(state);
+            var snapshot = await journal.ReadSnapshotAsync();
+            await journal.SaveAsync(state with { LastError = "external update" });
+            var before = await File.ReadAllBytesAsync(path);
+
+            var result = await journal.ResolveUncertainBatchAsync(
+                snapshot!,
+                "sha256:test",
+                Confirmation(snapshot!.State, target));
+
+            Assert.Equal(
+                JournalUncertainResolutionStatus.ChangedSinceSnapshot,
+                result.Status);
+            Assert.Equal(before, await File.ReadAllBytesAsync(path));
+        }
+        finally
+        {
+            Directory.Delete(directory, recursive: true);
+        }
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task ResolveUncertainBatchRejectsCallerTamperedSnapshotState(
+        bool tamperDimension)
+    {
+        var directory = Path.Combine(
+            Path.GetTempPath(),
+            $"jdmc-resolve-snapshot-state-{Guid.NewGuid():N}");
+        var path = Path.Combine(directory, "build-journal.json");
+        try
+        {
+            var journal = new BuildJournal(path);
+            const string target = "site-roads/road-edge-001/batch-0000";
+            var state = BuildJournalState.Create(
+                "sha256:test",
+                "worldedit",
+                "target-1") with
+            {
+                Dimension = "minecraft:overworld",
+                UncertainBatches = [target],
+                LastError = "response lost"
+            };
+            await journal.SaveAsync(state);
+            var snapshot = await journal.ReadSnapshotAsync();
+            var original = await File.ReadAllBytesAsync(path);
+            var tamperedState = tamperDimension
+                ? snapshot!.State with { Dimension = "minecraft:the_nether" }
+                : snapshot!.State with { LastError = "forged caller state" };
+            var tamperedSnapshot = snapshot with { State = tamperedState };
+
+            var result = await journal.ResolveUncertainBatchAsync(
+                tamperedSnapshot,
+                "sha256:test",
+                Confirmation(tamperedState, target));
+
+            Assert.Equal(
+                JournalUncertainResolutionStatus.ChangedSinceSnapshot,
+                result.Status);
+            Assert.Equal(original, await File.ReadAllBytesAsync(path));
+        }
+        finally
+        {
+            Directory.Delete(directory, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task ResolveUncertainBatchRejectsIncompleteProofWithoutRewritingBytes()
+    {
+        var directory = Path.Combine(
+            Path.GetTempPath(),
+            $"jdmc-resolve-proof-{Guid.NewGuid():N}");
+        var path = Path.Combine(directory, "build-journal.json");
+        try
+        {
+            var journal = new BuildJournal(path);
+            const string target = "site-roads/road-edge-001/batch-0000";
+            var state = BuildJournalState.Create(
+                "sha256:test",
+                "worldedit",
+                "target-1") with
+            {
+                UncertainBatches = [target],
+                LastError = "response lost"
+            };
+            await journal.SaveAsync(state);
+            var snapshot = await journal.ReadSnapshotAsync();
+            var before = await File.ReadAllBytesAsync(path);
+            var valid = Confirmation(snapshot!.State, target);
+            var invalid = valid with
+            {
+                Observations = valid.Observations.Skip(1).ToArray()
+            };
+
+            var result = await journal.ResolveUncertainBatchAsync(
+                snapshot,
+                "sha256:test",
+                invalid);
+
+            Assert.Equal(
+                JournalUncertainResolutionStatus.ConfirmationMismatch,
+                result.Status);
+            Assert.Equal(before, await File.ReadAllBytesAsync(path));
+        }
+        finally
+        {
+            Directory.Delete(directory, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task ConcurrentSameSnapshotResolutionAllowsOnlyOneCommit()
+    {
+        var directory = Path.Combine(
+            Path.GetTempPath(),
+            $"jdmc-resolve-concurrent-{Guid.NewGuid():N}");
+        var path = Path.Combine(directory, "build-journal.json");
+        try
+        {
+            var journal = new BuildJournal(path);
+            const string target = "site-roads/road-edge-001/batch-0000";
+            var state = BuildJournalState.Create(
+                "sha256:test",
+                "worldedit",
+                "target-1") with
+            {
+                UncertainBatches = [target],
+                LastError = "response lost"
+            };
+            await journal.SaveAsync(state);
+            var snapshot = await journal.ReadSnapshotAsync();
+            var confirmation = Confirmation(snapshot!.State, target);
+
+            var results = await Task.WhenAll(
+                journal.ResolveUncertainBatchAsync(
+                    snapshot,
+                    "sha256:test",
+                    confirmation),
+                journal.ResolveUncertainBatchAsync(
+                    snapshot,
+                    "sha256:test",
+                    confirmation));
+
+            Assert.Single(results, result => result.Resolved);
+            Assert.Single(
+                results,
+                result => result.Status
+                    == JournalUncertainResolutionStatus.ChangedSinceSnapshot);
+            var final = await journal.LoadAsync();
+            Assert.Equal([target], final!.CompletedBatches);
+            Assert.Empty(final.UncertainBatches);
+        }
+        finally
+        {
+            Directory.Delete(directory, recursive: true);
+        }
+    }
+
+    [Fact]
     public async Task ArchiveStaleAndResetHonorsCancellationBeforeMutation()
     {
         var directory = Path.Combine(Path.GetTempPath(), $"jdmc-archive-cancel-{Guid.NewGuid():N}");
@@ -163,5 +391,39 @@ public sealed class JournalTests
         {
             Directory.Delete(directory, recursive: true);
         }
+    }
+
+    private static FreshBatchConfirmation Confirmation(
+        BuildJournalState state,
+        string batchId)
+    {
+        var range = new BlockRange(
+            new BlockPosition(0, 64, 205),
+            new BlockPosition(48, 64, 211));
+        var positions = new[]
+        {
+            new BlockPosition(0, 64, 205),
+            new BlockPosition(0, 64, 211),
+            new BlockPosition(48, 64, 205),
+            new BlockPosition(48, 64, 211)
+        };
+        var started = DateTimeOffset.UtcNow;
+        return new FreshBatchConfirmation(
+            batchId,
+            state.SessionId,
+            state.BlueprintHash,
+            state.BackendId,
+            state.TargetFingerprint!,
+            range,
+            "minecraft:gray_concrete",
+            started,
+            started.AddSeconds(1),
+            positions.Select(position => new FreshBatchSampleConfirmation(
+                position,
+                position,
+                "minecraft:gray_concrete",
+                "minecraft:gray_concrete",
+                1,
+                true)).ToArray());
     }
 }

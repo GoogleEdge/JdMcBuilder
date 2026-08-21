@@ -59,6 +59,183 @@ public sealed class ProbeTests
         Assert.Equal(4, calls.Count(name => name == "mcc_send_chat"));
     }
 
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task ProbeRejectsMissingRequiredStableIdentityBeforeMutation(
+        bool emptyIdentity)
+    {
+        var tools = ToolSet(
+            "mcc_session_status",
+            "mcc_world_state",
+            "mcc_server_info",
+            "mcc_send_chat",
+            "mcc_world_block_at");
+        var calls = new List<string>();
+        var fake = new FakeMcpToolInvoker(tools, (name, _, _) =>
+        {
+            calls.Add(name);
+            return Task.FromResult(name switch
+            {
+                "mcc_session_status" => emptyIdentity
+                    ? Result(new { })
+                    : Result(new { connectionLabel = "alpha" }),
+                "mcc_world_state" => emptyIdentity
+                    ? Result(new { })
+                    : Result(new { currentMapLabel = "campus" }),
+                "mcc_server_info" => Result(new { version = "Leaf 1.21.11" }),
+                _ => throw new InvalidOperationException(
+                    $"身份预检失败后不得调用 {name}。")
+            });
+        });
+        var probe = new CommandCapabilityProbe(new MccToolClient(fake));
+
+        var exception = await Assert.ThrowsAsync<BackendException>(() =>
+            probe.ProbeApprovedAsync(new BackendProbeRequest(
+                new BlockRange(
+                    new BlockPosition(10, 64, 10),
+                    new BlockPosition(10, 64, 10)),
+                new BlockRange(
+                    new BlockPosition(20, 64, 20),
+                    new BlockPosition(20, 64, 20)),
+                new BlockPosition(30, 64, 30))));
+
+        Assert.False(exception.Uncertain);
+        Assert.Contains("session identity", exception.Message, StringComparison.Ordinal);
+        Assert.Equal(
+            ["mcc_session_status", "mcc_world_state", "mcc_server_info"],
+            calls);
+        Assert.DoesNotContain("mcc_send_chat", calls);
+        Assert.DoesNotContain("mcc_world_block_at", calls);
+    }
+
+    [Fact]
+    public async Task ProbeRejectsUnknownSessionIdentityEvenWhenWorldIsRecognized()
+    {
+        var tools = ToolSet(
+            "mcc_session_status",
+            "mcc_world_state",
+            "mcc_send_chat",
+            "mcc_world_block_at");
+        var calls = new List<string>();
+        var fake = new FakeMcpToolInvoker(tools, (name, _, _) =>
+        {
+            calls.Add(name);
+            return Task.FromResult(name switch
+            {
+                "mcc_session_status" => Result(new { connectionLabel = "alpha" }),
+                "mcc_world_state" => Result(new { dimension = "overworld" }),
+                _ => throw new InvalidOperationException(
+                    $"身份预检失败后不得调用 {name}。")
+            });
+        });
+        var probe = new CommandCapabilityProbe(new MccToolClient(fake));
+
+        var exception = await Assert.ThrowsAsync<BackendException>(() =>
+            probe.ProbeApprovedAsync(new BackendProbeRequest(
+                new BlockRange(
+                    new BlockPosition(10, 64, 10),
+                    new BlockPosition(10, 64, 10)),
+                new BlockRange(
+                    new BlockPosition(20, 64, 20),
+                    new BlockPosition(20, 64, 20)),
+                new BlockPosition(30, 64, 30))));
+
+        Assert.False(exception.Uncertain);
+        Assert.Contains("session identity", exception.Message, StringComparison.Ordinal);
+        Assert.Equal(["mcc_session_status", "mcc_world_state"], calls);
+        Assert.DoesNotContain("mcc_send_chat", calls);
+        Assert.DoesNotContain("mcc_world_block_at", calls);
+    }
+
+    [Fact]
+    public async Task ProbeRejectsMissingWorldIdentityBeforeMutation()
+    {
+        var tools = ToolSet(
+            "mcc_session_status",
+            "mcc_world_state",
+            "mcc_send_chat",
+            "mcc_world_block_at");
+        var calls = new List<string>();
+        var fake = new FakeMcpToolInvoker(tools, (name, _, _) =>
+        {
+            calls.Add(name);
+            return Task.FromResult(name switch
+            {
+                "mcc_session_status" => Result(new { sessionId = "s1" }),
+                "mcc_world_state" => Result(new { currentMapLabel = "campus" }),
+                _ => throw new InvalidOperationException(
+                    $"身份预检失败后不得调用 {name}。")
+            });
+        });
+        var probe = new CommandCapabilityProbe(new MccToolClient(fake));
+
+        var exception = await Assert.ThrowsAsync<BackendException>(() =>
+            probe.ProbeApprovedAsync(new BackendProbeRequest(
+                new BlockRange(
+                    new BlockPosition(10, 64, 10),
+                    new BlockPosition(10, 64, 10)),
+                new BlockRange(
+                    new BlockPosition(20, 64, 20),
+                    new BlockPosition(20, 64, 20)),
+                new BlockPosition(30, 64, 30))));
+
+        Assert.False(exception.Uncertain);
+        Assert.Contains("world identity", exception.Message, StringComparison.Ordinal);
+        Assert.Equal(["mcc_session_status", "mcc_world_state"], calls);
+        Assert.DoesNotContain("mcc_send_chat", calls);
+        Assert.DoesNotContain("mcc_world_block_at", calls);
+    }
+
+    [Fact]
+    public void TargetFingerprintRejectsEmptyOrUnrecognizedIdentity()
+    {
+        var mcc = new MccToolClient(new FakeMcpToolInvoker(
+            ToolSet(),
+            (_, _, _) => throw new InvalidOperationException("No calls expected.")));
+
+        var missingSession = Assert.Throws<BackendException>(() =>
+            TargetFingerprintBuilder.Create(
+                mcc,
+                Result(new { }),
+                Result(new { dimension = "minecraft:overworld" })));
+        var missingWorld = Assert.Throws<BackendException>(() =>
+            TargetFingerprintBuilder.Create(
+                mcc,
+                Result(new { sessionId = "s1" }),
+                Result(new { currentMapLabel = "campus" })));
+
+        Assert.False(missingSession.Uncertain);
+        Assert.Contains("session identity", missingSession.Message, StringComparison.Ordinal);
+        Assert.False(missingWorld.Uncertain);
+        Assert.Contains("world identity", missingWorld.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void TargetFingerprintChangesWithStableWorldIdentity()
+    {
+        var mcc = new MccToolClient(new FakeMcpToolInvoker(
+            ToolSet(),
+            (_, _, _) => throw new InvalidOperationException("No calls expected.")));
+        var session = Result(new { sessionId = "s1" });
+
+        var overworld = TargetFingerprintBuilder.Create(
+            mcc,
+            session,
+            Result(new { dimension = "minecraft:overworld" }));
+        var nether = TargetFingerprintBuilder.Create(
+            mcc,
+            session,
+            Result(new { dimension = "minecraft:the_nether" }));
+        var repeated = TargetFingerprintBuilder.Create(
+            mcc,
+            session,
+            Result(new { dimension = "minecraft:overworld" }));
+
+        Assert.NotEqual(overworld, nether);
+        Assert.Equal(overworld, repeated);
+    }
+
     [Fact]
     public async Task ProbeDoesNotCreateProofWhenBlockResponseIsUnrecognized()
     {

@@ -3,6 +3,7 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using JdMcBuilder.Backends;
 
 namespace JdMcBuilder.Execution;
 
@@ -94,6 +95,99 @@ public sealed class BuildJournal
         return await ReadSnapshotUnderExecutionAsync(cancellationToken).ConfigureAwait(false);
     }
 
+    internal async Task<JournalUncertainResolutionResult> ResolveUncertainBatchAsync(
+        BuildJournalSnapshot expectedSnapshot,
+        string currentBlueprintHash,
+        FreshBatchConfirmation confirmation,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(expectedSnapshot);
+        ArgumentException.ThrowIfNullOrWhiteSpace(expectedSnapshot.Revision);
+        ArgumentException.ThrowIfNullOrWhiteSpace(currentBlueprintHash);
+        ArgumentNullException.ThrowIfNull(confirmation);
+
+        await using var journalGate = await AcquireExecutionAsync(cancellationToken).ConfigureAwait(false);
+        cancellationToken.ThrowIfCancellationRequested();
+        if (!File.Exists(_path))
+        {
+            return ResolutionResult(
+                JournalUncertainResolutionStatus.Missing,
+                null,
+                "活动 journal 不存在，未解决不确定批次。 ");
+        }
+
+        var (rawBytes, state) = await ReadRawStateUnderExecutionAsync(cancellationToken).ConfigureAwait(false);
+        var revision = ComputeRevision(rawBytes);
+        var expectedState = NormalizeState(expectedSnapshot.State);
+        if (!string.Equals(revision, expectedSnapshot.Revision, StringComparison.Ordinal)
+            || !SameSnapshotIdentity(state, expectedState))
+        {
+            return ResolutionResult(
+                JournalUncertainResolutionStatus.ChangedSinceSnapshot,
+                state,
+                "活动 journal 在只读采样期间发生变化，未修改 journal。 ");
+        }
+
+        if (!string.Equals(state.BlueprintHash, currentBlueprintHash, StringComparison.Ordinal))
+        {
+            return ResolutionResult(
+                JournalUncertainResolutionStatus.BlueprintMismatch,
+                state,
+                "活动 journal 的蓝图 hash 与当前 reviewed blueprint 不一致，未修改 journal。 ");
+        }
+
+        if (!ValidateJournalState(state, out var stateError))
+        {
+            return ResolutionResult(
+                JournalUncertainResolutionStatus.InvalidState,
+                state,
+                $"活动 journal 状态无效：{stateError}未修改 journal。 ");
+        }
+
+        if (!ConfirmationIdentityMatches(state, confirmation))
+        {
+            return ResolutionResult(
+                JournalUncertainResolutionStatus.ConfirmationMismatch,
+                state,
+                "新鲜角点确认的 session/hash/backend/target 与活动 journal 不匹配，未修改 journal。 ");
+        }
+
+        if (!ValidateConfirmation(confirmation, out var confirmationError))
+        {
+            return ResolutionResult(
+                JournalUncertainResolutionStatus.ConfirmationMismatch,
+                state,
+                $"新鲜角点确认与计划不匹配：{confirmationError}未修改 journal。 ");
+        }
+
+        if (state.CompletedBatches.Contains(confirmation.BatchId, StringComparer.Ordinal)
+            || !state.UncertainBatches.Contains(confirmation.BatchId, StringComparer.Ordinal))
+        {
+            return ResolutionResult(
+                JournalUncertainResolutionStatus.NotUncertain,
+                state,
+                $"批次 {confirmation.BatchId} 当前不是可解决的不确定批次，未修改 journal。 ");
+        }
+
+        cancellationToken.ThrowIfCancellationRequested();
+        var resolved = state with
+        {
+            CompletedBatches = state.CompletedBatches.Append(confirmation.BatchId).ToArray(),
+            UncertainBatches = state.UncertainBatches
+                .Where(batchId => !string.Equals(
+                    batchId,
+                    confirmation.BatchId,
+                    StringComparison.Ordinal))
+                .ToArray(),
+            LastError = null
+        };
+        await SaveUnderExecutionAsync(resolved, cancellationToken).ConfigureAwait(false);
+        return ResolutionResult(
+            JournalUncertainResolutionStatus.Resolved,
+            resolved,
+            $"批次 {confirmation.BatchId} 已根据新鲜角点抽样从 uncertain 移至 completed；未发送世界写入。 ");
+    }
+
     public async Task<JournalArchiveResult> ArchiveStaleAndResetAsync(
         BuildJournalSnapshot expectedSnapshot,
         string currentBlueprintHash,
@@ -117,9 +211,9 @@ public sealed class BuildJournal
 
         var (rawBytes, state) = await ReadRawStateUnderExecutionAsync(cancellationToken).ConfigureAwait(false);
         var revision = ComputeRevision(rawBytes);
+        var expectedState = NormalizeState(expectedSnapshot.State);
         if (!string.Equals(revision, expectedSnapshot.Revision, StringComparison.Ordinal)
-            || !string.Equals(state.SessionId, expectedSnapshot.State.SessionId, StringComparison.Ordinal)
-            || !string.Equals(state.BlueprintHash, expectedSnapshot.State.BlueprintHash, StringComparison.Ordinal))
+            || !SameSnapshotIdentity(state, expectedState))
         {
             return new JournalArchiveResult(
                 JournalArchiveStatus.ChangedSinceSnapshot,
@@ -260,11 +354,163 @@ public sealed class BuildJournal
         throw new IOException("无法创建不冲突的 journal 归档路径。 ");
     }
 
-    private static BuildJournalState NormalizeState(BuildJournalState state) => state with
+    private static JournalUncertainResolutionResult ResolutionResult(
+        JournalUncertainResolutionStatus status,
+        BuildJournalState? state,
+        string message) =>
+        new(status, state, message);
+
+    private static bool SameSnapshotIdentity(
+        BuildJournalState actual,
+        BuildJournalState expected) =>
+        string.Equals(actual.SessionId, expected.SessionId, StringComparison.Ordinal)
+        && string.Equals(actual.BlueprintHash, expected.BlueprintHash, StringComparison.Ordinal)
+        && string.Equals(actual.Dimension, expected.Dimension, StringComparison.Ordinal)
+        && string.Equals(actual.BackendId, expected.BackendId, StringComparison.Ordinal)
+        && string.Equals(
+            actual.TargetFingerprint,
+            expected.TargetFingerprint,
+            StringComparison.Ordinal)
+        && actual.CompletedBatches.SequenceEqual(
+            expected.CompletedBatches,
+            StringComparer.Ordinal)
+        && actual.UncertainBatches.SequenceEqual(
+            expected.UncertainBatches,
+            StringComparer.Ordinal)
+        && string.Equals(actual.LastError, expected.LastError, StringComparison.Ordinal);
+
+    private static bool ValidateJournalState(
+        BuildJournalState state,
+        out string error)
     {
-        CompletedBatches = state.CompletedBatches ?? Array.Empty<string>(),
-        UncertainBatches = state.UncertainBatches ?? Array.Empty<string>()
-    };
+        if (string.IsNullOrWhiteSpace(state.SessionId)
+            || string.IsNullOrWhiteSpace(state.BlueprintHash)
+            || string.IsNullOrWhiteSpace(state.BackendId)
+            || string.IsNullOrWhiteSpace(state.TargetFingerprint))
+        {
+            error = "缺少 session/hash/backend/target identity。 ";
+            return false;
+        }
+
+        if (state.CompletedBatches.Any(string.IsNullOrWhiteSpace)
+            || state.UncertainBatches.Any(string.IsNullOrWhiteSpace)
+            || state.CompletedBatches.Distinct(StringComparer.Ordinal).Count()
+                != state.CompletedBatches.Count
+            || state.UncertainBatches.Distinct(StringComparer.Ordinal).Count()
+                != state.UncertainBatches.Count)
+        {
+            error = "批次列表包含空值或重复 ID。 ";
+            return false;
+        }
+
+        if (state.CompletedBatches.Intersect(
+                state.UncertainBatches,
+                StringComparer.Ordinal).Any())
+        {
+            error = "同一批次同时出现在 completed 和 uncertain。 ";
+            return false;
+        }
+
+        error = string.Empty;
+        return true;
+    }
+
+    private static bool ConfirmationIdentityMatches(
+        BuildJournalState state,
+        FreshBatchConfirmation confirmation) =>
+        string.Equals(confirmation.SessionId, state.SessionId, StringComparison.Ordinal)
+        && string.Equals(
+            confirmation.BlueprintHash,
+            state.BlueprintHash,
+            StringComparison.Ordinal)
+        && string.Equals(
+            confirmation.BackendId,
+            state.BackendId,
+            StringComparison.Ordinal)
+        && string.Equals(
+            confirmation.TargetFingerprint,
+            state.TargetFingerprint,
+            StringComparison.Ordinal);
+
+    private static bool ValidateConfirmation(
+        FreshBatchConfirmation confirmation,
+        out string error)
+    {
+        if (string.IsNullOrWhiteSpace(confirmation.BatchId)
+            || string.IsNullOrWhiteSpace(confirmation.ExpectedBlock)
+            || confirmation.Observations is null
+            || confirmation.SamplingCompletedAtUtc < confirmation.SamplingStartedAtUtc)
+        {
+            error = "确认缺少 batch/block/observation 或采样时间无效。 ";
+            return false;
+        }
+
+        IReadOnlyList<JdMcBuilder.Core.Blueprint.BlockPosition> required;
+        try
+        {
+            var plan = BlockRangeVerificationPlan.Create(
+                confirmation.Range,
+                confirmation.ExpectedBlock);
+            if (plan.Range != confirmation.Range)
+            {
+                error = "确认范围未标准化。 ";
+                return false;
+            }
+
+            required = plan.SamplePositions;
+        }
+        catch (Exception exception)
+        {
+            error = $"确认范围或方块无效：{exception.Message} ";
+            return false;
+        }
+
+        if (confirmation.Observations.Count != required.Count
+            || confirmation.Observations
+                .Select(item => item.RequestedPosition)
+                .Distinct()
+                .Count() != confirmation.Observations.Count
+            || !confirmation.Observations
+                .Select(item => item.RequestedPosition)
+                .SequenceEqual(required))
+        {
+            error = "确认未包含精确且稳定排序的完整去重角点集合。 ";
+            return false;
+        }
+
+        foreach (var observation in confirmation.Observations)
+        {
+            if (!observation.Verified
+                || observation.Attempts <= 0
+                || observation.ReturnedPosition is not { } returned
+                || returned != observation.RequestedPosition
+                || !string.Equals(
+                    observation.ExpectedBlock,
+                    confirmation.ExpectedBlock,
+                    StringComparison.Ordinal)
+                || !string.Equals(
+                    observation.ActualBlock,
+                    confirmation.ExpectedBlock,
+                    StringComparison.OrdinalIgnoreCase))
+            {
+                error = $"角点 {observation.RequestedPosition} 没有提供坐标绑定且匹配的成功观测。 ";
+                return false;
+            }
+        }
+
+        error = string.Empty;
+        return true;
+    }
+
+    private static BuildJournalState NormalizeState(BuildJournalState state)
+    {
+        ArgumentNullException.ThrowIfNull(state);
+        return state with
+        {
+            CompletedBatches = state.CompletedBatches ?? Array.Empty<string>(),
+            UncertainBatches = state.UncertainBatches ?? Array.Empty<string>()
+        };
+    }
 
     private static string ComputeRevision(byte[] bytes) =>
         Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant();

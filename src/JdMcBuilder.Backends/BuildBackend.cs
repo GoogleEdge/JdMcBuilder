@@ -193,7 +193,7 @@ public interface IBuildBackend
     Task<BackendOperationResult> ExecuteAsync(BuildBatch batch, CancellationToken cancellationToken = default);
 }
 
-public sealed class BackendException : Exception
+public class BackendException : Exception
 {
     public BackendException(string message, bool uncertain = false, Exception? inner = null)
         : base(message, inner)

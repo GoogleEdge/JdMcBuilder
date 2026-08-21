@@ -34,7 +34,10 @@ public partial class MainWindow : Window
 
     private async void ConnectButton_Click(object sender, RoutedEventArgs e)
     {
-        if (_isBuilding || _isProbing || Volatile.Read(ref _workflowBusy) != 0)
+        if (_isBuilding
+            || _isProbing
+            || _isJournalAction
+            || Interlocked.CompareExchange(ref _workflowBusy, 1, 0) != 0)
         {
             FooterStatus.Text = "施工、能力探针或其他操作运行期间不能重连";
             return;
@@ -81,11 +84,18 @@ public partial class MainWindow : Window
             AppendLog($"连接失败：{exception.Message}");
             FooterStatus.Text = "连接失败；请检查 MCC 是否已进入游戏和 endpoint/token";
         }
+        finally
+        {
+            Volatile.Write(ref _workflowBusy, 0);
+        }
     }
 
     private async void ImportButton_Click(object sender, RoutedEventArgs e)
     {
-        if (_isBuilding || _isProbing || _isJournalAction || Volatile.Read(ref _workflowBusy) != 0)
+        if (_isBuilding
+            || _isProbing
+            || _isJournalAction
+            || Interlocked.CompareExchange(ref _workflowBusy, 1, 0) != 0)
         {
             FooterStatus.Text = "施工、能力探针或 journal 操作运行期间不能更换蓝图";
             return;
@@ -98,6 +108,7 @@ public partial class MainWindow : Window
         };
         if (dialog.ShowDialog() != true)
         {
+            Volatile.Write(ref _workflowBusy, 0);
             return;
         }
 
@@ -139,11 +150,18 @@ public partial class MainWindow : Window
             AppendLog($"导入失败：{exception.Message}");
             FooterStatus.Text = "蓝图导入失败";
         }
+        finally
+        {
+            Volatile.Write(ref _workflowBusy, 0);
+        }
     }
 
     private async void DryRunButton_Click(object sender, RoutedEventArgs e)
     {
-        if (_isBuilding || _isProbing || _isJournalAction)
+        if (_isBuilding
+            || _isProbing
+            || _isJournalAction
+            || Interlocked.CompareExchange(ref _workflowBusy, 1, 0) != 0)
         {
             FooterStatus.Text = "已有施工、能力探针或 journal 任务正在运行";
             return;
@@ -152,6 +170,7 @@ public partial class MainWindow : Window
         if (_batches is not { } batches || _blueprint is null)
         {
             FooterStatus.Text = "请先导入蓝图";
+            Volatile.Write(ref _workflowBusy, 0);
             return;
         }
 
@@ -168,6 +187,10 @@ public partial class MainWindow : Window
         {
             AppendLog($"Dry Run 失败：{exception.Message}");
             FooterStatus.Text = "Dry Run 失败";
+        }
+        finally
+        {
+            Volatile.Write(ref _workflowBusy, 0);
         }
     }
 
@@ -262,6 +285,16 @@ public partial class MainWindow : Window
             return;
         }
 
+        var journal = new BuildJournal(GetBuildJournalPath());
+        var existingSnapshot = await journal.ReadSnapshotAsync();
+        if (existingSnapshot?.State.UncertainBatches.Count > 0)
+        {
+            var ids = string.Join(", ", existingSnapshot.State.UncertainBatches);
+            AppendLog($"施工已阻止：journal 包含不确定批次 {ids}。请先使用“核验并解决不确定批次”；能力探针成功不会解决旧写入。 ");
+            FooterStatus.Text = "journal 含不确定批次；请先只读核验";
+            return;
+        }
+
         var confirmation = MessageBox.Show("将向 Leaf 1.21.11 世界发送写入操作。请确认当前是测试/备份世界，并已完成 Dry Run。继续？", "确认施工", MessageBoxButton.YesNo, MessageBoxImage.Warning);
         if (confirmation != MessageBoxResult.Yes)
         {
@@ -270,16 +303,16 @@ public partial class MainWindow : Window
 
         var readback = new BlockReadbackVerifier(mcc);
         var worldEditVerifier = new WorldEditVerifier(readback);
-        var sampleVerifier = new Func<BlockPosition, string, CancellationToken, Task>(
-            (position, expectedBlock, cancellationToken) =>
-                worldEditVerifier.VerifyAsync(position, expectedBlock, cancellationToken));
+        var rangeVerifier = new Func<BlockRange, string, CancellationToken, Task<BlockRangeVerificationResult>>(
+            (range, expectedBlock, cancellationToken) =>
+                worldEditVerifier.VerifyAsync(range, expectedBlock, cancellationToken));
         var nativeSetBlockVerifier = new NativeSetBlockVerifier(mcc);
         var worldEditVerification = _backendProbeReport?.Find("worldedit")?.Verification;
         var nativeFillVerification = _backendProbeReport?.Find("native-fill")?.Verification;
         var setBlockVerification = _backendProbeReport?.Find("native-setblock")?.Verification;
         var worldEdit = new WorldEditCommandBackend(
             mcc,
-            sampleVerifier,
+            rangeVerifier,
             worldEditStatus,
             verification: worldEditVerification);
         var nativeFill = new NativeFillBackend(
@@ -293,7 +326,7 @@ public partial class MainWindow : Window
             setBlockStatus,
             verification: setBlockVerification);
         var journalPath = GetBuildJournalPath();
-        var executor = new BuildExecutor([worldEdit, nativeFill, setBlock], new BackendSelector(), new BuildJournal(journalPath), new BuildExecutionOptions(
+        var executor = new BuildExecutor([worldEdit, nativeFill, setBlock], new BackendSelector(), journal, new BuildExecutionOptions(
             DryRun: false,
             AllowUnverifiedBackend: false,
             TargetFingerprint: targetFingerprint));
@@ -346,19 +379,32 @@ public partial class MainWindow : Window
             {
                 _buildTask = null;
             }
-
-            Volatile.Write(ref _workflowBusy, 0);
         }
     }
 
     private async void ProbeButton_Click(object sender, RoutedEventArgs e)
     {
-        if (_isBuilding || _isProbing || Volatile.Read(ref _workflowBusy) != 0)
+        if (_isBuilding
+            || _isProbing
+            || _isJournalAction
+            || Interlocked.CompareExchange(ref _workflowBusy, 1, 0) != 0)
         {
             FooterStatus.Text = "施工或其他操作运行期间不能执行能力探针";
             return;
         }
 
+        try
+        {
+            await ProbeCoreAsync();
+        }
+        finally
+        {
+            Volatile.Write(ref _workflowBusy, 0);
+        }
+    }
+
+    private async Task ProbeCoreAsync()
+    {
         if (_mcc is not { } mcc)
         {
             FooterStatus.Text = "请先连接 MCP";
@@ -412,12 +458,6 @@ public partial class MainWindow : Window
             return;
         }
 
-        if (Interlocked.CompareExchange(ref _workflowBusy, 1, 0) != 0)
-        {
-            FooterStatus.Text = "已有其他操作正在准备；能力探针已阻止";
-            return;
-        }
-
         var generation = Volatile.Read(ref _connectionGeneration);
         _isProbing = true;
         _backendProbeReport = null;
@@ -465,7 +505,6 @@ public partial class MainWindow : Window
         finally
         {
             _isProbing = false;
-            Volatile.Write(ref _workflowBusy, 0);
         }
     }
 
@@ -505,6 +544,18 @@ public partial class MainWindow : Window
             }
 
             var state = snapshot.State;
+            if (string.Equals(state.BlueprintHash, currentHash, StringComparison.Ordinal))
+            {
+                var uncertain = state.UncertainBatches.Count > 0
+                    ? $" 当前不确定批次：{string.Join(", ", state.UncertainBatches)}。请使用“核验并解决不确定批次”；能力探针或归档都不会清除它。"
+                    : string.Empty;
+                AppendLog($"活动 journal 已对应当前蓝图，不能作为旧 journal 归档。{uncertain}");
+                FooterStatus.Text = state.UncertainBatches.Count > 0
+                    ? "同蓝图 journal 含 uncertainty；请使用只读核验"
+                    : "journal 已对应当前蓝图；未归档";
+                return;
+            }
+
             var warning =
                 $"活动 journal 属于旧蓝图。\n\n"
                 + $"Session：{state.SessionId}\n"
@@ -542,6 +593,126 @@ public partial class MainWindow : Window
         {
             AppendLog($"journal 归档失败：{exception.Message}");
             FooterStatus.Text = "journal 归档失败；原文件未被应用主动删除";
+        }
+        finally
+        {
+            _isJournalAction = false;
+            Volatile.Write(ref _workflowBusy, 0);
+        }
+    }
+
+    private async void ResolveUncertainBatchButton_Click(object sender, RoutedEventArgs e)
+    {
+        if (_isBuilding
+            || _isProbing
+            || _isJournalAction
+            || Interlocked.CompareExchange(ref _workflowBusy, 1, 0) != 0)
+        {
+            FooterStatus.Text = "施工、能力探针或其他 journal 操作运行期间不能核验";
+            return;
+        }
+
+        _isJournalAction = true;
+        try
+        {
+            if (_mcc is not { } mcc
+                || _batches is not { } batches
+                || _blueprint is null
+                || string.IsNullOrWhiteSpace(_importedBlueprintHash))
+            {
+                FooterStatus.Text = "请先连接 MCP 并导入有效蓝图";
+                return;
+            }
+
+            var generation = Volatile.Read(ref _connectionGeneration);
+            var currentHash = await ComputeBlueprintHashAsync();
+            if (!string.Equals(currentHash, _importedBlueprintHash, StringComparison.Ordinal))
+            {
+                FooterStatus.Text = "蓝图文件已变化；请重新导入后再核验";
+                return;
+            }
+
+            var journal = new BuildJournal(GetBuildJournalPath());
+            var snapshot = await journal.ReadSnapshotAsync();
+            if (snapshot is null)
+            {
+                FooterStatus.Text = "没有活动 build journal";
+                return;
+            }
+
+            var uncertain = snapshot.State.UncertainBatches;
+            if (uncertain.Count == 0)
+            {
+                FooterStatus.Text = "journal 没有不确定批次";
+                return;
+            }
+
+            if (uncertain.Count != 1)
+            {
+                AppendLog($"只读核验已阻止：一次必须显式处理一个批次；当前共有 {uncertain.Count} 个：{string.Join(", ", uncertain)}。 ");
+                FooterStatus.Text = "存在多个 uncertain batch；未自动选择";
+                return;
+            }
+
+            var batchId = uncertain[0];
+            var matches = batches
+                .Where(batch => string.Equals(batch.BatchId, batchId, StringComparison.Ordinal))
+                .ToArray();
+            if (matches.Length != 1 || matches[0] is not FillBatch fill)
+            {
+                AppendLog($"只读核验已阻止：{batchId} 在当前计划中不唯一或不是 FillBatch。 ");
+                FooterStatus.Text = "不确定批次与当前 reviewed plan 不匹配";
+                return;
+            }
+
+            var plan = BlockRangeVerificationPlan.Create(fill.Range, fill.Block);
+            var prompt =
+                $"批次：{batchId}\n"
+                + $"计划范围：{plan.Range}\n"
+                + $"期望方块：{plan.ExpectedBlock}\n"
+                + $"角点：{string.Join(", ", plan.SamplePositions)}\n\n"
+                + "此操作只读取 session/world/server identity 和 mcc_world_block_at；"
+                + "不会发送聊天、//pos、//set、/fill、/setblock，不会归档或自动继续施工。\n"
+                + "角点抽样不是对区域内部每个方块的完整证明。是否继续？";
+            if (MessageBox.Show(
+                    prompt,
+                    "只读核验不确定批次",
+                    MessageBoxButton.YesNo,
+                    MessageBoxImage.Warning) != MessageBoxResult.Yes)
+            {
+                FooterStatus.Text = "已取消不确定批次核验";
+                return;
+            }
+
+            var service = new BuildRecoveryService(journal, mcc);
+            var request = new BuildRecoveryRequest(
+                batchId,
+                _importedBlueprintHash,
+                snapshot,
+                batches,
+                cancellationToken => BlueprintHash.ComputeFileSha256Async(
+                    BlueprintPath.Text,
+                    cancellationToken),
+                cancellationToken => ReadCurrentTargetFingerprintAsync(
+                    mcc,
+                    cancellationToken),
+                () => generation == Volatile.Read(ref _connectionGeneration)
+                    && ReferenceEquals(_mcc, mcc));
+            var result = await service.ResolveAsync(request);
+            AppendLog(result.Message);
+            FooterStatus.Text = result.Resolved
+                ? $"批次 {batchId} 已通过角点抽样解决；请单独开始施工"
+                : $"批次 {batchId} 仍保持 uncertain；journal 未改变";
+            MessageBox.Show(
+                result.Message,
+                result.Resolved ? "不确定批次已解决" : "只读核验未通过",
+                MessageBoxButton.OK,
+                result.Resolved ? MessageBoxImage.Information : MessageBoxImage.Warning);
+        }
+        catch (Exception exception)
+        {
+            AppendLog($"不确定批次核验失败：{exception.Message}");
+            FooterStatus.Text = "只读核验失败；journal 保持原状态";
         }
         finally
         {
@@ -610,14 +781,19 @@ public partial class MainWindow : Window
         _ => backendId
     };
 
-    private async Task<string> ReadCurrentTargetFingerprintAsync(MccToolClient mcc)
+    private async Task<string> ReadCurrentTargetFingerprintAsync(
+        MccToolClient mcc,
+        CancellationToken cancellationToken = default)
     {
-        var session = await mcc.SessionStatusAsync().ConfigureAwait(true);
-        var world = await mcc.WorldStateAsync().ConfigureAwait(true);
+        var session = await mcc.SessionStatusAsync(cancellationToken).ConfigureAwait(true);
+        cancellationToken.ThrowIfCancellationRequested();
+        var world = await mcc.WorldStateAsync(cancellationToken).ConfigureAwait(true);
+        cancellationToken.ThrowIfCancellationRequested();
         McpToolResult? server = null;
         if (mcc.HasTool("mcc_server_info"))
         {
-            server = await mcc.ServerInfoAsync().ConfigureAwait(true);
+            server = await mcc.ServerInfoAsync(cancellationToken).ConfigureAwait(true);
+            cancellationToken.ThrowIfCancellationRequested();
         }
 
         return TargetFingerprintBuilder.Create(mcc, session, world, server);

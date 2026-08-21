@@ -12,60 +12,38 @@ public sealed record NativeFillVerificationOptions
     public Func<TimeSpan, CancellationToken, Task> DelayAsync { get; init; } =
         static (delay, cancellationToken) => Task.Delay(delay, cancellationToken);
 
-    internal void Validate()
+    internal BlockRangeVerificationOptions ToRangeOptions()
     {
-        if (MaxAttemptsPerSample <= 0)
+        var options = new BlockRangeVerificationOptions
         {
-            throw new ArgumentOutOfRangeException(
-                nameof(MaxAttemptsPerSample),
-                "每个采样点至少需要一次读取尝试。 ");
-        }
-
-        var maximumTaskDelay = TimeSpan.FromMilliseconds(int.MaxValue);
-        if (OverallTimeout <= TimeSpan.Zero
-            || OverallTimeout > maximumTaskDelay)
-        {
-            throw new ArgumentOutOfRangeException(
-                nameof(OverallTimeout),
-                $"原生 /fill 验证总超时必须在 1 毫秒到 {maximumTaskDelay} 之间。 ");
-        }
-
-        if (InitialDelay < TimeSpan.Zero || InitialDelay > maximumTaskDelay)
-        {
-            throw new ArgumentOutOfRangeException(
-                nameof(InitialDelay),
-                $"原生 /fill 验证初始等待必须在零到 {maximumTaskDelay} 之间。 ");
-        }
-
-        if (MaximumDelay < InitialDelay || MaximumDelay > maximumTaskDelay)
-        {
-            throw new ArgumentOutOfRangeException(
-                nameof(MaximumDelay),
-                $"原生 /fill 验证最大等待必须在初始等待到 {maximumTaskDelay} 之间。 ");
-        }
-
-        ArgumentNullException.ThrowIfNull(DelayAsync);
+            MaxAttemptsPerSample = MaxAttemptsPerSample,
+            OverallTimeout = OverallTimeout,
+            InitialDelay = InitialDelay,
+            MaximumDelay = MaximumDelay,
+            DelayAsync = DelayAsync
+        };
+        options.Validate();
+        return options;
     }
+
+    internal void Validate() => _ = ToRangeOptions();
 }
 
 public sealed class NativeFillVerificationPlan
 {
     private NativeFillVerificationPlan(
-        BlockRange range,
-        string expectedBlock,
-        string command,
-        IReadOnlyList<BlockPosition> samplePositions)
+        BlockRangeVerificationPlan rangePlan,
+        string command)
     {
-        Range = range;
-        ExpectedBlock = expectedBlock;
+        RangePlan = rangePlan;
         Command = command;
-        SamplePositions = samplePositions;
     }
 
-    public BlockRange Range { get; }
-    public string ExpectedBlock { get; }
+    internal BlockRangeVerificationPlan RangePlan { get; }
+    public BlockRange Range => RangePlan.Range;
+    public string ExpectedBlock => RangePlan.ExpectedBlock;
     public string Command { get; }
-    public IReadOnlyList<BlockPosition> SamplePositions { get; }
+    public IReadOnlyList<BlockPosition> SamplePositions => RangePlan.SamplePositions;
 
     public static NativeFillVerificationPlan Create(
         BlockRange range,
@@ -73,50 +51,21 @@ public sealed class NativeFillVerificationPlan
         CommandSafety? safety = null)
     {
         var commandSafety = safety ?? new CommandSafety();
-        var validatedBlock = commandSafety.ValidateBlock(expectedBlock);
-        var normalizedRange = BlockRange.FromUnordered(range.Min, range.Max);
-        var command = commandSafety.BuildNativeFill(normalizedRange, validatedBlock);
-        var samples = CreateCornerSamples(normalizedRange);
-        return new NativeFillVerificationPlan(
-            normalizedRange,
-            validatedBlock,
-            command,
-            Array.AsReadOnly(samples.ToArray()));
+        var rangePlan = BlockRangeVerificationPlan.Create(
+            range,
+            expectedBlock,
+            commandSafety);
+        var command = commandSafety.BuildNativeFill(
+            rangePlan.Range,
+            rangePlan.ExpectedBlock);
+        return new NativeFillVerificationPlan(rangePlan, command);
     }
 
     public string Describe() =>
-        $"范围 {Range}；命令 {Command}；采样点 " +
-        $"[{string.Join(", ", SamplePositions.Select(item => item.ToString()))}]";
+        $"{RangePlan.Describe()}；命令 {Command}";
 
-    internal static IReadOnlyList<BlockPosition> CreateCornerSamples(BlockRange range)
-    {
-        if (!range.IsValid)
-        {
-            throw new BackendException($"原生 /fill 验证范围无效：{range}。 ");
-        }
-
-        var samples = new List<BlockPosition>(8);
-        var seen = new HashSet<BlockPosition>();
-        var xs = new[] { range.Min.X, range.Max.X };
-        var ys = new[] { range.Min.Y, range.Max.Y };
-        var zs = new[] { range.Min.Z, range.Max.Z };
-        foreach (var x in xs)
-        {
-            foreach (var y in ys)
-            {
-                foreach (var z in zs)
-                {
-                    var position = new BlockPosition(x, y, z);
-                    if (seen.Add(position))
-                    {
-                        samples.Add(position);
-                    }
-                }
-            }
-        }
-
-        return samples;
-    }
+    internal static IReadOnlyList<BlockPosition> CreateCornerSamples(BlockRange range) =>
+        BlockRangeVerificationPlan.CreateCornerSamples(range);
 }
 
 public sealed record NativeFillSampleObservation(
@@ -142,14 +91,12 @@ public sealed record NativeFillVerificationResult(
     IReadOnlyList<NativeFillSampleObservation> Observations)
 {
     public string Diagnostic =>
-        $"{Plan.Describe()}；" +
-        $"观测：{string.Join("；", Observations.Select(item => item.ToString()))}";
+        $"{Plan.Describe()}；观测：{string.Join("；", Observations.Select(item => item.ToString()))}";
 }
 
 public sealed class NativeFillVerifier
 {
-    private readonly BlockReadbackVerifier _readback;
-    private readonly NativeFillVerificationOptions _options;
+    private readonly BlockRangeVerifier _rangeVerifier;
 
     public NativeFillVerifier(
         MccToolClient mcc,
@@ -157,9 +104,10 @@ public sealed class NativeFillVerifier
         BlockReadbackVerifier? readback = null)
     {
         ArgumentNullException.ThrowIfNull(mcc);
-        _readback = readback ?? new BlockReadbackVerifier(mcc);
-        _options = options ?? new NativeFillVerificationOptions();
-        _options.Validate();
+        var configured = options ?? new NativeFillVerificationOptions();
+        _rangeVerifier = readback is null
+            ? new BlockRangeVerifier(mcc, configured.ToRangeOptions())
+            : new BlockRangeVerifier(readback, configured.ToRangeOptions());
     }
 
     public async Task<NativeFillVerificationResult> VerifyAsync(
@@ -167,166 +115,33 @@ public sealed class NativeFillVerifier
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(plan);
-        ValidatePlan(plan);
-        _options.Validate();
-
-        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        timeout.CancelAfter(_options.OverallTimeout);
-        var verificationToken = timeout.Token;
-        var states = plan.SamplePositions.ToDictionary(
-            position => position,
-            position => new SampleState(position));
-        var pending = states.Values.ToList();
+        if (string.IsNullOrWhiteSpace(plan.Command))
+        {
+            throw new BackendException(
+                "原生 /fill 验证计划无效：缺少命令。 ",
+                uncertain: false);
+        }
 
         try
         {
-            for (var round = 1; round <= _options.MaxAttemptsPerSample; round++)
-            {
-                foreach (var state in pending.ToArray())
-                {
-                    verificationToken.ThrowIfCancellationRequested();
-                    state.Attempts++;
-                    var observation = await _readback.ReadOnceAsync(
-                        state.RequestedPosition,
-                        verificationToken).ConfigureAwait(false);
-                    if (!observation.IsValid)
-                    {
-                        throw Fail(
-                            plan,
-                            states.Values,
-                            observation.FailureReason ?? $"采样 {state.RequestedPosition} 结果无效。 ");
-                    }
-
-                    state.LastObservedBlock = observation.BlockId;
-                    state.LastReturnedPosition = observation.ReturnedPosition;
-                    if (string.Equals(
-                            observation.BlockId,
-                            plan.ExpectedBlock,
-                            StringComparison.OrdinalIgnoreCase))
-                    {
-                        state.Verified = true;
-                        pending.Remove(state);
-                    }
-                }
-
-                if (pending.Count == 0)
-                {
-                    return CreateResult(plan, states.Values);
-                }
-
-                if (pending.Count > 0
-                    && round < _options.MaxAttemptsPerSample)
-                {
-                    await _options.DelayAsync(
-                        GetDelay(round),
-                        verificationToken).ConfigureAwait(false);
-                }
-            }
-        }
-        catch (OperationCanceledException exception)
-        {
-            var reason = cancellationToken.IsCancellationRequested
-                ? "验证被取消"
-                : "验证超过总超时";
-            throw Fail(plan, states.Values, $"{reason}。", exception);
-        }
-        catch (McpException exception)
-        {
-            throw Fail(
+            var result = await _rangeVerifier.VerifyAsync(
+                plan.RangePlan,
+                cancellationToken).ConfigureAwait(false);
+            return new NativeFillVerificationResult(
                 plan,
-                states.Values,
-                $"mcc_world_block_at 调用失败：{exception.Message}",
-                exception);
+                result.Observations.Select(item => new NativeFillSampleObservation(
+                    item.RequestedPosition,
+                    item.Attempts,
+                    item.LastObservedBlock,
+                    item.LastReturnedPosition,
+                    item.Verified)).ToArray());
         }
-        catch (BackendException)
-        {
-            throw;
-        }
-        catch (Exception exception)
-        {
-            throw Fail(
-                plan,
-                states.Values,
-                $"采样读取失败：{exception.Message}",
-                exception);
-        }
-
-        throw Fail(
-            plan,
-            states.Values,
-            "在有限的只读采样尝试后仍有采样点不匹配。 ");
-    }
-
-    private static void ValidatePlan(NativeFillVerificationPlan plan)
-    {
-        if (!plan.Range.IsValid
-            || string.IsNullOrWhiteSpace(plan.ExpectedBlock)
-            || string.IsNullOrWhiteSpace(plan.Command)
-            || plan.SamplePositions is null
-            || plan.SamplePositions.Count == 0
-            || plan.SamplePositions.Any(position => !plan.Range.Contains(position))
-            || plan.SamplePositions.Distinct().Count() != plan.SamplePositions.Count
-            || !plan.SamplePositions.SequenceEqual(
-                NativeFillVerificationPlan.CreateCornerSamples(plan.Range)))
+        catch (BackendException exception) when (exception.Uncertain)
         {
             throw new BackendException(
-                "原生 /fill 验证计划无效：必须包含有效范围、命令、期望方块和完整的范围角点采样。 ",
-                uncertain: false);
+                $"原生 /fill 独立方块验证失败：{exception.Message}{Environment.NewLine}{plan.Describe()}",
+                uncertain: true,
+                exception);
         }
-    }
-
-    private TimeSpan GetDelay(int completedRound)
-    {
-        if (_options.InitialDelay == TimeSpan.Zero)
-        {
-            return TimeSpan.Zero;
-        }
-
-        var multiplier = Math.Pow(2, completedRound - 1);
-        var milliseconds = Math.Min(
-            _options.MaximumDelay.TotalMilliseconds,
-            _options.InitialDelay.TotalMilliseconds * multiplier);
-        return TimeSpan.FromMilliseconds(milliseconds);
-    }
-
-    private static NativeFillVerificationResult CreateResult(
-        NativeFillVerificationPlan plan,
-        IEnumerable<SampleState> states) =>
-        new(
-            plan,
-            states.Select(state => state.ToObservation()).ToArray());
-
-    private static BackendException Fail(
-        NativeFillVerificationPlan plan,
-        IEnumerable<SampleState> states,
-        string reason,
-        Exception? inner = null)
-    {
-        var diagnostic = new NativeFillVerificationResult(
-            plan,
-            states.Select(state => state.ToObservation()).ToArray()).Diagnostic;
-        return new BackendException(
-            $"原生 /fill 独立方块验证失败：{reason}{Environment.NewLine}{diagnostic}",
-            uncertain: true,
-            inner);
-    }
-
-    private sealed class SampleState
-    {
-        public SampleState(BlockPosition requestedPosition) => RequestedPosition = requestedPosition;
-
-        public BlockPosition RequestedPosition { get; }
-        public int Attempts { get; set; }
-        public string? LastObservedBlock { get; set; }
-        public BlockPosition? LastReturnedPosition { get; set; }
-        public bool Verified { get; set; }
-
-        public NativeFillSampleObservation ToObservation() =>
-            new(
-                RequestedPosition,
-                Attempts,
-                LastObservedBlock,
-                LastReturnedPosition,
-                Verified);
     }
 }

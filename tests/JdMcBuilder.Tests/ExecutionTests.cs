@@ -39,6 +39,60 @@ public sealed class ExecutionTests
     }
 
     [Fact]
+    public async Task DryRunNeverClearsExistingUncertainJournal()
+    {
+        var backend = new RecordingBackend(
+            BackendCapabilities.CreateVerifiedForTesting(
+                "worldedit",
+                "WorldEdit",
+                true,
+                false,
+                "test",
+                "test-target"));
+        var journalPath = Path.Combine(
+            Path.GetTempPath(),
+            $"jdmc-dry-uncertain-{Guid.NewGuid():N}.json");
+        try
+        {
+            const string batchId = "p/o/batch-0000";
+            var journal = new BuildJournal(journalPath);
+            await journal.SaveAsync(BuildJournalState.Create(
+                "sha256:test",
+                "worldedit",
+                "test-target") with
+            {
+                UncertainBatches = [batchId],
+                LastError = "response lost"
+            });
+            var original = await File.ReadAllBytesAsync(journalPath);
+            var executor = new BuildExecutor(
+                [backend],
+                new BackendSelector(),
+                journal,
+                new BuildExecutionOptions(DryRun: true));
+            var batch = new FillBatch(
+                batchId,
+                "p",
+                "o",
+                new BlockRange(
+                    new BlockPosition(0, 0, 0),
+                    new BlockPosition(0, 0, 0)),
+                "minecraft:stone");
+
+            var exception = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+                executor.ExecuteAsync("sha256:test", [batch]));
+
+            Assert.Contains(batchId, exception.Message, StringComparison.Ordinal);
+            Assert.Empty(backend.Calls);
+            Assert.Equal(original, await File.ReadAllBytesAsync(journalPath));
+        }
+        finally
+        {
+            File.Delete(journalPath);
+        }
+    }
+
+    [Fact]
     public async Task ExecutorRejectsStaleBlueprintBeforeCallingBackend()
     {
         var backend = new RecordingBackend(BackendCapabilities.CreateVerifiedForTesting("worldedit", "WorldEdit", true, false, "test", "target-1"));
@@ -201,6 +255,63 @@ public sealed class ExecutionTests
                 batch,
                 allowUnverified: true,
                 targetFingerprint: null));
+    }
+
+    [Fact]
+    public async Task ExecutorGloballyBlocksBeforeEarlierPendingBatchWhenLaterBatchIsUncertain()
+    {
+        var backend = new RecordingBackend(
+            BackendCapabilities.CreateVerifiedForTesting(
+                "worldedit",
+                "WorldEdit",
+                true,
+                false,
+                "test",
+                "test-target"));
+        var journalPath = Path.Combine(
+            Path.GetTempPath(),
+            $"jdmc-global-uncertain-{Guid.NewGuid():N}.json");
+        try
+        {
+            var first = new FillBatch(
+                "p/o/batch-0000",
+                "p",
+                "o",
+                new BlockRange(new BlockPosition(0, 0, 0), new BlockPosition(0, 0, 0)),
+                "minecraft:stone");
+            var later = new FillBatch(
+                "p/o/batch-0001",
+                "p",
+                "o",
+                new BlockRange(new BlockPosition(1, 0, 0), new BlockPosition(1, 0, 0)),
+                "minecraft:stone");
+            var journal = new BuildJournal(journalPath);
+            await journal.SaveAsync(BuildJournalState.Create(
+                "sha256:test",
+                "worldedit",
+                "test-target") with
+            {
+                UncertainBatches = [later.BatchId],
+                LastError = "response lost"
+            });
+            var executor = new BuildExecutor(
+                [backend],
+                new BackendSelector(),
+                journal,
+                new BuildExecutionOptions(
+                    DryRun: false,
+                    TargetFingerprint: "test-target"));
+
+            var exception = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+                executor.ExecuteAsync("sha256:test", [first, later]));
+
+            Assert.Contains(later.BatchId, exception.Message, StringComparison.Ordinal);
+            Assert.Empty(backend.Calls);
+        }
+        finally
+        {
+            File.Delete(journalPath);
+        }
     }
 
     [Fact]

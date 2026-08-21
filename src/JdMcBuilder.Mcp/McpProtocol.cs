@@ -433,18 +433,28 @@ public sealed record McpToolResult(
 
     private static bool TryFindDirectBlockId(JsonElement element, out string blockId)
     {
+        string? candidate = null;
         foreach (var property in element.EnumerateObject())
         {
-            if (IsBlockProperty(property.Name)
-                && property.Value.ValueKind == JsonValueKind.String
-                && TryNormalizeBlockId(property.Value.GetString(), out blockId))
+            if (!IsBlockProperty(property.Name)
+                || property.Value.ValueKind != JsonValueKind.String
+                || !TryNormalizeBlockId(property.Value.GetString(), out var normalized))
             {
-                return true;
+                continue;
             }
+
+            if (candidate is not null
+                && !string.Equals(candidate, normalized, StringComparison.OrdinalIgnoreCase))
+            {
+                blockId = string.Empty;
+                return false;
+            }
+
+            candidate = normalized;
         }
 
-        blockId = string.Empty;
-        return false;
+        blockId = candidate ?? string.Empty;
+        return candidate is not null;
     }
 
     private static bool TryGetPosition(JsonElement element, out BlockPosition position)

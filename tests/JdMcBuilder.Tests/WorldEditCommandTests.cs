@@ -21,14 +21,18 @@ public sealed class WorldEditCommandTests
             events.Add($"send:{text}");
             return Task.FromResult(Result(new { success = true }));
         });
-        var sampleCalls = new List<(BlockPosition Position, string Block)>();
+        var sampleCalls = new List<(BlockRange Range, string Block)>();
         var backend = new WorldEditCommandBackend(
             new MccToolClient(fake),
-            (position, block, _) =>
+            (range, block, _) =>
             {
-                sampleCalls.Add((position, block));
-                events.Add($"sample:{position}:{block}");
-                return Task.CompletedTask;
+                sampleCalls.Add((range, block));
+                events.Add($"sample:{range}:{block}");
+                var plan = BlockRangeVerificationPlan.Create(range, block);
+                return Task.FromResult(new BlockRangeVerificationResult(
+                    plan,
+                    plan.SamplePositions.Select(position => new BlockRangeSampleObservation(
+                        position, 1, block, position, null, true)).ToArray()));
             },
             BackendStatus.Available,
             verification: BackendVerification.CreateForTesting("worldedit"));
@@ -59,16 +63,48 @@ public sealed class WorldEditCommandTests
                 .ToArray(),
             result.ToolCalls.ToArray());
         Assert.Equal(
-            new[] { (new BlockPosition(1, 64, 2), "minecraft:stone") },
+            new[] { (range, "minecraft:stone") },
             sampleCalls.ToArray());
         Assert.Equal(
             new[]
             {
                 "send://pos 1,64,2 3,65,4",
                 "send://set minecraft:stone",
-                "sample:1 64 2:minecraft:stone"
+                $"sample:{range}:minecraft:stone"
             },
             events.ToArray());
+    }
+
+    [Fact]
+    public async Task BackendRejectsInvalidBlockBeforeAnyChatCall()
+    {
+        var calls = 0;
+        var fake = new FakeMcpToolInvoker(
+            ToolSet("mcc_send_chat"),
+            (_, _, _) =>
+            {
+                calls++;
+                return Task.FromResult(Result(new { success = true }));
+            });
+        var backend = new WorldEditCommandBackend(
+            new MccToolClient(fake),
+            (_, _, _) => throw new InvalidOperationException("verification must not run"),
+            BackendStatus.Available,
+            verification: BackendVerification.CreateForTesting("worldedit"));
+        var batch = new FillBatch(
+            "phase/fill/batch-0000",
+            "phase",
+            "fill",
+            new BlockRange(
+                new BlockPosition(1, 64, 2),
+                new BlockPosition(3, 65, 4)),
+            "minecraft:stone;op @a");
+
+        var exception = await Assert.ThrowsAnyAsync<Exception>(() =>
+            backend.ExecuteAsync(batch));
+
+        Assert.Equal(0, calls);
+        Assert.Contains("方块", exception.Message, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -76,7 +112,7 @@ public sealed class WorldEditCommandTests
     {
         var tools = ToolSet("mcc_send_chat", "mcc_world_block_at");
         var chatPayloads = new List<string>();
-        var readCount = 0;
+        var readCounts = new Dictionary<BlockPosition, int>();
         var fake = new FakeMcpToolInvoker(tools, (name, arguments, _) =>
         {
             if (name == "mcc_send_chat")
@@ -85,8 +121,11 @@ public sealed class WorldEditCommandTests
                 return Task.FromResult(Result(new { success = true }));
             }
 
-            readCount++;
             var position = GetPosition(arguments);
+            var readCount = readCounts.TryGetValue(position, out var count)
+                ? count + 1
+                : 1;
+            readCounts[position] = readCount;
             return Task.FromResult(Result(new
             {
                 x = position.X,
@@ -98,7 +137,7 @@ public sealed class WorldEditCommandTests
         var readback = new BlockReadbackVerifier(new MccToolClient(fake));
         var backend = new WorldEditCommandBackend(
             new MccToolClient(fake),
-            (position, block, cancellationToken) => new WorldEditVerifier(
+            (range, block, cancellationToken) => new WorldEditVerifier(
                 readback,
                 new WorldEditVerificationOptions
                 {
@@ -107,7 +146,7 @@ public sealed class WorldEditCommandTests
                     InitialDelay = TimeSpan.Zero,
                     MaximumDelay = TimeSpan.Zero,
                     DelayAsync = static (_, _) => Task.CompletedTask
-                }).VerifyAsync(position, block, cancellationToken),
+                }).VerifyAsync(range, block, cancellationToken),
             BackendStatus.Available,
             verification: BackendVerification.CreateForTesting("worldedit"));
         var batch = new FillBatch(
@@ -121,7 +160,8 @@ public sealed class WorldEditCommandTests
 
         Assert.True(result.Succeeded);
         Assert.Equal(["//pos 1,64,2 3,65,4", "//set minecraft:stone"], chatPayloads);
-        Assert.Equal(2, readCount);
+        Assert.Equal(8, readCounts.Count);
+        Assert.All(readCounts.Values, count => Assert.Equal(2, count));
     }
 
     [Fact]
@@ -130,6 +170,7 @@ public sealed class WorldEditCommandTests
         var tools = ToolSet("mcc_send_chat", "mcc_world_block_at");
         var chatPayloads = new List<string>();
         var readCount = 0;
+        var sampled = new HashSet<BlockPosition>();
         var fake = new FakeMcpToolInvoker(tools, (name, arguments, _) =>
         {
             if (name == "mcc_send_chat")
@@ -140,6 +181,7 @@ public sealed class WorldEditCommandTests
 
             readCount++;
             var position = GetPosition(arguments);
+            sampled.Add(position);
             return Task.FromResult(Result(new
             {
                 x = position.X,
@@ -151,7 +193,7 @@ public sealed class WorldEditCommandTests
         var readback = new BlockReadbackVerifier(new MccToolClient(fake));
         var backend = new WorldEditCommandBackend(
             new MccToolClient(fake),
-            (position, block, cancellationToken) => new WorldEditVerifier(
+            (range, block, cancellationToken) => new WorldEditVerifier(
                 readback,
                 new WorldEditVerificationOptions
                 {
@@ -160,7 +202,7 @@ public sealed class WorldEditCommandTests
                     InitialDelay = TimeSpan.Zero,
                     MaximumDelay = TimeSpan.Zero,
                     DelayAsync = static (_, _) => Task.CompletedTask
-                }).VerifyAsync(position, block, cancellationToken),
+                }).VerifyAsync(range, block, cancellationToken),
             BackendStatus.Available,
             verification: BackendVerification.CreateForTesting("worldedit"));
         var batch = new FillBatch(
@@ -170,11 +212,12 @@ public sealed class WorldEditCommandTests
             new BlockRange(new BlockPosition(1, 64, 2), new BlockPosition(3, 65, 4)),
             "minecraft:stone");
 
-        var exception = await Assert.ThrowsAsync<BackendException>(() => backend.ExecuteAsync(batch));
+        var exception = await Assert.ThrowsAnyAsync<BackendException>(() => backend.ExecuteAsync(batch));
 
         Assert.True(exception.Uncertain);
         Assert.Equal(["//pos 1,64,2 3,65,4", "//set minecraft:stone"], chatPayloads);
-        Assert.Equal(2, readCount);
+        Assert.Equal(16, readCount);
+        Assert.Equal(8, sampled.Count);
         Assert.Contains("最后实际 minecraft:air", exception.Message, StringComparison.Ordinal);
     }
 
@@ -227,9 +270,10 @@ public sealed class WorldEditCommandTests
                 ("mcc_world_state", (string?)null),
                 ("mcc_send_chat", (string?)"//pos 10,64,10 11,64,10"),
                 ("mcc_send_chat", (string?)"//set minecraft:stone"),
+                ("mcc_world_block_at", (string?)null),
                 ("mcc_world_block_at", (string?)null)
             ],
-            calls.Take(5).ToArray());
+            calls.Take(6).ToArray());
     }
 
     private static IReadOnlyDictionary<string, McpToolDefinition> ToolSet(
