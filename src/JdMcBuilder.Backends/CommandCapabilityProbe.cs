@@ -143,7 +143,15 @@ public static class TargetFingerprintBuilder
 
         foreach (var name in names)
         {
-            if (result.TryGetMachineString(out var value, name))
+            var status = result.TryGetConsistentMachineString(out var value, name);
+            if (status == MachineStringLookupStatus.Conflict)
+            {
+                throw new BackendException(
+                    $"目标身份预检失败：{prefix} identity 字段 {name} 存在冲突值；拒绝生成目标指纹。",
+                    uncertain: false);
+            }
+
+            if (status == MachineStringLookupStatus.Found)
             {
                 yield return $"{prefix}:{name.ToLowerInvariant()}={value.Trim()}";
             }

@@ -221,6 +221,126 @@ public sealed class McpTests
     }
 
     [Fact]
+    public void TargetIdentityAcceptsRealMccJsonTextContent()
+    {
+        var mcc = new MccToolClient(new FakeMcpToolInvoker(
+            new Dictionary<string, McpToolDefinition>(),
+            (_, _, _) => throw new InvalidOperationException("No calls expected.")));
+        var session = JsonTextResult(new
+        {
+            success = true,
+            data = new
+            {
+                host = "127.0.0.1",
+                port = 25565,
+                username = "MCCBot",
+                protocolVersion = 776,
+                terrainEnabled = true,
+                location = new { x = 80.8, y = 65, z = 9.69 }
+            }
+        });
+        var world = JsonTextResult(new
+        {
+            success = true,
+            data = new
+            {
+                host = "127.0.0.1",
+                port = 25565,
+                dimension = "minecraft:overworld",
+                loadedChunkCount = 799,
+                pendingChunkCount = 0
+            }
+        });
+
+        var fingerprint = TargetFingerprintBuilder.Create(mcc, session, world);
+
+        Assert.NotEmpty(fingerprint);
+        Assert.Equal(
+            MachineStringLookupStatus.Found,
+            session.TryGetConsistentMachineString(out var host, "host"));
+        Assert.Equal("127.0.0.1", host);
+    }
+
+    [Fact]
+    public void TargetIdentityRejectsConflictingJsonTextCandidates()
+    {
+        var mcc = new MccToolClient(new FakeMcpToolInvoker(
+            new Dictionary<string, McpToolDefinition>(),
+            (_, _, _) => throw new InvalidOperationException("No calls expected.")));
+        var conflictingSession = new McpToolResult(
+            [
+                JsonSerializer.SerializeToElement(new
+                {
+                    type = "text",
+                    text = "{\"host\":\"127.0.0.1\"}"
+                }),
+                JsonSerializer.SerializeToElement(new
+                {
+                    type = "text",
+                    text = "{\"host\":\"127.0.0.2\"}"
+                })
+            ],
+            false);
+
+        var exception = Assert.Throws<BackendException>(() =>
+            TargetFingerprintBuilder.Create(
+                mcc,
+                conflictingSession,
+                JsonTextResult(new { dimension = "minecraft:overworld" })));
+
+        Assert.False(exception.Uncertain);
+        Assert.Contains("冲突", exception.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void TargetIdentityIgnoresOrdinaryTextContent()
+    {
+        var result = new McpToolResult(
+            [JsonSerializer.SerializeToElement(new
+            {
+                type = "text",
+                text = "当前连接正常，但没有机器身份 JSON。"
+            })],
+            false);
+
+        Assert.Equal(
+            MachineStringLookupStatus.Missing,
+            result.TryGetConsistentMachineString(out _, "host"));
+    }
+
+    [Fact]
+    public void MachineIdentityWinsOverJsonTextContent()
+    {
+        var result = new McpToolResult(
+            [JsonSerializer.SerializeToElement(new
+            {
+                type = "text",
+                text = "{\"host\":\"stale-host\"}"
+            })],
+            false,
+            JsonSerializer.SerializeToElement(new { host = "current-host" }));
+
+        Assert.Equal(
+            MachineStringLookupStatus.Found,
+            result.TryGetConsistentMachineString(out var host, "host"));
+        Assert.Equal("current-host", host);
+    }
+
+    [Fact]
+    public void ConflictingMachineIdentityValuesFailClosed()
+    {
+        var result = new McpToolResult(
+            [],
+            false,
+            JsonSerializer.SerializeToElement(new { host = "one" }),
+            JsonSerializer.SerializeToElement(new { host = "two" }));
+
+        Assert.Equal(
+            MachineStringLookupStatus.Conflict,
+            result.TryGetConsistentMachineString(out _, "host"));
+    }
+
+    [Fact]
     public void ToolResultExtractsMccSampleCoordinates()
     {
         var result = new McpToolResult(
@@ -374,6 +494,15 @@ public sealed class McpTests
         Assert.True(result.TryGetItemId(out var item));
         Assert.Equal("Stone", item);
     }
+
+    private static McpToolResult JsonTextResult<T>(T value) =>
+        new(
+            [JsonSerializer.SerializeToElement(new
+            {
+                type = "text",
+                text = JsonSerializer.Serialize(value)
+            })],
+            false);
 
     private static McpToolDefinition Definition(string name) =>
         new(name, null, JsonSerializer.SerializeToElement(new { type = "object" }));

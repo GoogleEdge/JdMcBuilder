@@ -65,7 +65,7 @@
                     </Grid.RowDefinitions>
                     <TextBlock x:Name="BlueprintPath" Text="尚未导入蓝图" FontWeight="SemiBold" TextWrapping="Wrap" />
                     <TextBlock Grid.Row="1" x:Name="BlueprintSummary" Margin="0,8,0,10" Text="导入 mc-blueprint/v1 JSON 或 JSONL 文件后显示统计。" TextWrapping="Wrap" />
-                    <TextBox Grid.Row="2" x:Name="LogBox" IsReadOnly="True" AcceptsReturn="True" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Auto" TextWrapping="NoWrap" />
+                    <TextBox Grid.Row="2" x:Name="LogBox" IsReadOnly="True" AcceptsReturn="True" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled" TextWrapping="Wrap" />
                     <StackPanel Grid.Row="3" Orientation="Horizontal">
                         <Button Content="开始施工（需确认）" Click="StartBuildButton_Click" />
                         <Button Content="核验并解决不确定批次" Click="ResolveUncertainBatchButton_Click" />

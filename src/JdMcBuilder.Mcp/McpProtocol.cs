@@ -29,6 +29,13 @@ public sealed record McpChunkStatusSample(
     bool Loaded,
     bool FullyLoaded);
 
+public enum MachineStringLookupStatus
+{
+    Missing,
+    Found,
+    Conflict
+}
+
 public sealed record McpToolResult(
     IReadOnlyList<JsonElement> Content,
     bool IsError,
@@ -220,26 +227,43 @@ public sealed record McpToolResult(
         return false;
     }
 
-    public bool TryGetMachineString(out string value, params string[] propertyNames)
+    public bool TryGetMachineString(out string value, params string[] propertyNames) =>
+        TryGetConsistentMachineString(out value, propertyNames)
+            == MachineStringLookupStatus.Found;
+
+    public MachineStringLookupStatus TryGetConsistentMachineString(
+        out string value,
+        params string[] propertyNames)
     {
         ArgumentNullException.ThrowIfNull(propertyNames);
         if (propertyNames.Length == 0)
         {
             value = string.Empty;
-            return false;
+            return MachineStringLookupStatus.Missing;
         }
 
         var names = propertyNames.ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var authoritativeCandidates = new List<string>();
         foreach (var item in EnumerateMachinePayloads())
         {
-            if (TryFindMachineString(item, names, out value))
-            {
-                return true;
-            }
+            CollectMachineStrings(item, names, authoritativeCandidates);
         }
 
-        value = string.Empty;
-        return false;
+        var authoritativeStatus = ResolveMachineStrings(
+            authoritativeCandidates,
+            out value);
+        if (authoritativeStatus != MachineStringLookupStatus.Missing)
+        {
+            return authoritativeStatus;
+        }
+
+        var contentCandidates = new List<string>();
+        foreach (var item in Content)
+        {
+            CollectJsonTextMachineStrings(item, names, contentCandidates);
+        }
+
+        return ResolveMachineStrings(contentCandidates, out value);
     }
 
     private IEnumerable<JsonElement> EnumerateMachinePayloads()
@@ -253,6 +277,105 @@ public sealed record McpToolResult(
         {
             yield return raw;
         }
+    }
+
+    private static void CollectMachineStrings(
+        JsonElement element,
+        IReadOnlySet<string> propertyNames,
+        ICollection<string> candidates)
+    {
+        switch (element.ValueKind)
+        {
+            case JsonValueKind.Object:
+                foreach (var property in element.EnumerateObject())
+                {
+                    if (propertyNames.Contains(property.Name)
+                        && property.Value.ValueKind == JsonValueKind.String
+                        && !string.IsNullOrWhiteSpace(property.Value.GetString()))
+                    {
+                        candidates.Add(property.Value.GetString()!.Trim());
+                    }
+
+                    if (!IsHumanReadableProperty(property.Name))
+                    {
+                        CollectMachineStrings(property.Value, propertyNames, candidates);
+                    }
+                }
+
+                break;
+            case JsonValueKind.Array:
+                foreach (var item in element.EnumerateArray())
+                {
+                    CollectMachineStrings(item, propertyNames, candidates);
+                }
+
+                break;
+        }
+    }
+
+    private static void CollectJsonTextMachineStrings(
+        JsonElement element,
+        IReadOnlySet<string> propertyNames,
+        ICollection<string> candidates)
+    {
+        if (element.ValueKind != JsonValueKind.Object)
+        {
+            return;
+        }
+
+        if (element.TryGetProperty("type", out var type)
+            && type.ValueKind == JsonValueKind.String
+            && !string.Equals(type.GetString(), "text", StringComparison.OrdinalIgnoreCase))
+        {
+            return;
+        }
+
+        if (!element.TryGetProperty("text", out var text)
+            || text.ValueKind != JsonValueKind.String)
+        {
+            return;
+        }
+
+        var rawText = text.GetString();
+        if (string.IsNullOrWhiteSpace(rawText)
+            || !rawText.TrimStart().StartsWith("{", StringComparison.Ordinal))
+        {
+            return;
+        }
+
+        try
+        {
+            using var document = JsonDocument.Parse(rawText);
+            CollectMachineStrings(document.RootElement, propertyNames, candidates);
+        }
+        catch (JsonException)
+        {
+            // Ordinary human-readable content is not an identity source.
+        }
+    }
+
+    private static MachineStringLookupStatus ResolveMachineStrings(
+        IReadOnlyCollection<string> candidates,
+        out string value)
+    {
+        var distinct = candidates
+            .Where(item => !string.IsNullOrWhiteSpace(item))
+            .Distinct(StringComparer.Ordinal)
+            .ToArray();
+        if (distinct.Length == 0)
+        {
+            value = string.Empty;
+            return MachineStringLookupStatus.Missing;
+        }
+
+        if (distinct.Length > 1)
+        {
+            value = string.Empty;
+            return MachineStringLookupStatus.Conflict;
+        }
+
+        value = distinct[0];
+        return MachineStringLookupStatus.Found;
     }
 
     private IEnumerable<JsonElement> EnumeratePayloads()

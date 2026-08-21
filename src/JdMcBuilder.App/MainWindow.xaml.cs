@@ -74,15 +74,16 @@ public partial class MainWindow : Window
             ToolsList.ItemsSource = client.Tools.Values.OrderBy(tool => tool.Name).ToArray();
             var report = MccCapabilityDetector.Detect(client.Tools);
             ConnectionStatus.Text = $"已连接：发现 {client.Tools.Count} 个工具";
-            AppendLog("MCP initialize + tools/list 完成。WorldEdit、/fill 与 /setblock 仍需在测试世界分别验证权限和独立采样。\n" + string.Join("\n", report.Capabilities.Select(item => $"{item.Capability}: {item.Status} — {item.Reason}")));
+            AppendLog("MCC 已连接，工具发现完成。写入能力仍需在测试世界单独验证。\n"
+                + string.Join("\n", report.Capabilities.Select(FormatCapability)));
             await RunPreflightAsync();
             FooterStatus.Text = "已连接；尚未执行任何写入";
         }
         catch (Exception exception)
         {
             ConnectionStatus.Text = "连接失败";
-            AppendLog($"连接失败：{exception.Message}");
-            FooterStatus.Text = "连接失败；请检查 MCC 是否已进入游戏和 endpoint/token";
+            AppendFailure("连接失败", exception, "请确认 MCC 已启动、服务器已进入游戏，并检查地址。 ");
+            FooterStatus.Text = "连接失败；请检查 MCC 和地址";
         }
         finally
         {
@@ -511,8 +512,11 @@ public partial class MainWindow : Window
         {
             _backendProbeReport = null;
             BackendCapabilityStatus.Text = "WorldEdit：未探测\n/fill：未探测\n/setblock：未探测";
-            AppendLog($"能力探针失败：{exception.Message}");
-            FooterStatus.Text = "能力探针失败；施工仍保持阻止";
+            AppendFailure(
+                "能力探针失败",
+                exception,
+                "没有发送能力探针写入；施工仍保持阻止。请重新连接后再试。 ");
+            FooterStatus.Text = "能力探针失败；没有发送探针写入";
         }
         finally
         {
@@ -793,6 +797,72 @@ public partial class MainWindow : Window
         _ => backendId
     };
 
+    private static string FormatCapability(ToolCapability capability)
+    {
+        var name = capability.Capability switch
+        {
+            "world-sampling" => "世界方块读取",
+            "session-preflight" => "会话预检",
+            "worldedit" => "WorldEdit",
+            "native-fill" => "/fill",
+            "native-setblock" => "/setblock",
+            _ => capability.Capability
+        };
+        var status = capability.Status switch
+        {
+            CapabilityStatus.Available => capability.Capability is "world-sampling" or "session-preflight"
+                ? "已发现工具"
+                : "已验证",
+            CapabilityStatus.Unverified => "待测试",
+            CapabilityStatus.Unavailable => "不可用",
+            _ => "状态未知"
+        };
+        return $"{name}：{status}（{capability.Reason}）";
+    }
+
+    private void AppendFailure(string context, Exception exception, string userAction)
+    {
+        var summary = exception switch
+        {
+            BackendException backend when backend.Message.Contains("session identity", StringComparison.Ordinal)
+                => "MCC 返回的服务器状态格式未被识别。",
+            BackendException backend when backend.Message.Contains("world identity", StringComparison.Ordinal)
+                => "MCC 返回的世界信息格式未被识别。",
+            McpException mcp => FriendlyMcpFailure(mcp.Kind),
+            _ => "操作失败。"
+        };
+        AppendLog($"{context}：{summary} {userAction}");
+        AppendLog($"技术详情：{SanitizeTechnicalMessage(exception.Message)}");
+    }
+
+    private static string FriendlyMcpFailure(McpFailureKind kind) => kind switch
+    {
+        McpFailureKind.Transport => "无法连接游戏服务。",
+        McpFailureKind.Timeout => "游戏服务响应超时。",
+        McpFailureKind.SessionExpired => "MCC 连接会话已失效。",
+        McpFailureKind.PermissionDenied => "游戏服务拒绝了请求。",
+        McpFailureKind.InvalidArguments => "当前 MCC 不接受这些参数。",
+        McpFailureKind.ToolNotFound => "当前 MCC 没有提供所需工具。",
+        McpFailureKind.CapabilityDisabled => "当前能力未启用。",
+        McpFailureKind.Protocol or McpFailureKind.Http => "游戏服务返回了无法识别的接口响应。",
+        McpFailureKind.RemoteFailure => "游戏端没有完成这项操作。",
+        _ => "游戏服务操作失败。"
+    };
+
+    private static string SanitizeTechnicalMessage(string message)
+    {
+        if (string.IsNullOrWhiteSpace(message))
+        {
+            return "没有更多技术详情。";
+        }
+
+        var sanitized = message
+            .Replace("MCC_MCP_AUTH_TOKEN", "认证令牌", StringComparison.OrdinalIgnoreCase);
+        return sanitized.Length <= 1000
+            ? sanitized
+            : sanitized[..1000] + "…";
+    }
+
     private async Task<string> ReadCurrentTargetFingerprintAsync(
         MccToolClient mcc,
         CancellationToken cancellationToken = default)
@@ -834,7 +904,7 @@ public partial class MainWindow : Window
             }
             catch (Exception exception)
             {
-                AppendLog($"预检失败：{check.Name}：{exception.Message}");
+                AppendFailure($"预检失败：{check.Name}", exception, "这项只读检查失败；没有发送写入。 ");
             }
         }
     }
