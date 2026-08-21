@@ -219,6 +219,39 @@ public sealed class TransportTests
     }
 
     [Fact]
+    public async Task TransportRejectsSessionHeaderRotationWithoutRebinding()
+    {
+        var requestCount = 0;
+        var handler = new StubHandler(request =>
+        {
+            requestCount++;
+            var responseId = JsonDocument.Parse(
+                request.Content!.ReadAsStringAsync().GetAwaiter().GetResult())
+                .RootElement.GetProperty("id").GetRawText();
+            var session = requestCount == 1 ? "session-a" : "session-b";
+            return new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Headers = { { "Mcp-Session-Id", session } },
+                Content = new StringContent(
+                    $"{{\"jsonrpc\":\"2.0\",\"id\":{responseId},\"result\":{{}}}}",
+                    Encoding.UTF8,
+                    "application/json")
+            };
+        });
+        using var http = new HttpClient(handler);
+        await using var transport = new HttpMcpTransport(new McpConnectionOptions(), http);
+        await transport.ConnectAsync();
+        await transport.SendRequestAsync("initialize", new { });
+
+        var exception = await Assert.ThrowsAsync<McpException>(() =>
+            transport.SendRequestAsync("tools/list", new { }));
+
+        Assert.Equal(McpFailureKind.SessionExpired, exception.Kind);
+        Assert.Null(transport.SessionId);
+        Assert.Equal(2, requestCount);
+    }
+
+    [Fact]
     public async Task TransportSendsJsonRpcAndCapturesSessionHeader()
     {
         string? requestBody = null;

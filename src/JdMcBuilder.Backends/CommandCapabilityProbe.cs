@@ -78,6 +78,18 @@ public static class TargetFingerprintBuilder
         };
         identity.AddRange(sessionIdentity);
         identity.AddRange(worldIdentity);
+        if (mcc.Endpoint is not null)
+        {
+            if (mcc.ContextFingerprint is not { } contextFingerprint)
+            {
+                throw new BackendException(
+                    "目标身份预检失败：MCP transport 未提供稳定 session context；拒绝生成目标指纹。",
+                    uncertain: false);
+            }
+
+            identity.Add($"mcp-context:{contextFingerprint}");
+        }
+
         if (serverInfo is not null)
         {
             identity.AddRange(ExtractStableIdentity(serverInfo, "server"));
@@ -131,7 +143,7 @@ public static class TargetFingerprintBuilder
 
         foreach (var name in names)
         {
-            if (result.TryGetString(out var value, name))
+            if (result.TryGetMachineString(out var value, name))
             {
                 yield return $"{prefix}:{name.ToLowerInvariant()}={value.Trim()}";
             }
@@ -158,7 +170,9 @@ public sealed class CommandCapabilityProbe
     {
         _mcc = mcc ?? throw new ArgumentNullException(nameof(mcc));
         _safety = safety ?? new CommandSafety();
-        _readback = new BlockReadbackVerifier(_mcc);
+        _readback = new BlockReadbackVerifier(
+            _mcc,
+            requireReadyChunk: _mcc.HasTool("mcc_chunk_status"));
         _worldEditVerifier = new WorldEditVerifier(
             _readback,
             worldEditVerificationOptions,

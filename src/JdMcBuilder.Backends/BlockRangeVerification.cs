@@ -6,6 +6,7 @@ namespace JdMcBuilder.Backends;
 public sealed record BlockRangeVerificationOptions
 {
     public int MaxAttemptsPerSample { get; init; } = 6;
+    public bool RequireReadyChunk { get; init; }
     public TimeSpan OverallTimeout { get; init; } = TimeSpan.FromSeconds(5);
     public TimeSpan InitialDelay { get; init; } = TimeSpan.FromMilliseconds(100);
     public TimeSpan MaximumDelay { get; init; } = TimeSpan.FromMilliseconds(500);
@@ -130,7 +131,8 @@ public sealed record BlockRangeSampleObservation(
     string? LastObservedBlock,
     BlockPosition? LastReturnedPosition,
     string? FailureReason,
-    bool Verified)
+    bool Verified,
+    BlockReadinessStatus? ReadinessStatus = null)
 {
     public override string ToString()
     {
@@ -141,8 +143,20 @@ public sealed record BlockRangeSampleObservation(
         var failure = string.IsNullOrWhiteSpace(FailureReason)
             ? string.Empty
             : $"，原因 {FailureReason}";
+        var readiness = ReadinessStatus switch
+        {
+            BlockReadinessStatus.Ready =>
+                "；目标 chunk 已加载，但方块值仍来自 MCC 客户端缓存，不是服务器权威 fresh read",
+            BlockReadinessStatus.Unknown =>
+                "；未获得 chunk readiness，方块值来自 MCC 客户端缓存且新鲜度未知",
+            BlockReadinessStatus.Unavailable =>
+                "；MCC 客户端缓存当前不可观测",
+            BlockReadinessStatus.Invalid =>
+                "；chunk readiness 观测无效",
+            _ => string.Empty
+        };
         var status = Verified ? "通过" : "未通过";
-        return $"请求 {RequestedPosition}：{status}，尝试 {Attempts} 次，最后实际 {actual}{returned}{failure}";
+        return $"请求 {RequestedPosition}：{status}，尝试 {Attempts} 次，最后实际 {actual}{returned}{readiness}{failure}";
     }
 }
 
@@ -187,9 +201,12 @@ public sealed class BlockRangeVerifier
         BlockReadbackVerifier? readback = null)
     {
         ArgumentNullException.ThrowIfNull(mcc);
-        _readback = readback ?? new BlockReadbackVerifier(mcc);
+        _readback = readback ?? new BlockReadbackVerifier(
+            mcc,
+            options?.RequireReadyChunk == true || mcc.HasTool("mcc_chunk_status"));
         _options = options ?? new BlockRangeVerificationOptions();
         _options.Validate();
+        ValidateReadinessConfiguration();
     }
 
     public BlockRangeVerifier(
@@ -199,6 +216,17 @@ public sealed class BlockRangeVerifier
         _readback = readback ?? throw new ArgumentNullException(nameof(readback));
         _options = options ?? new BlockRangeVerificationOptions();
         _options.Validate();
+        ValidateReadinessConfiguration();
+    }
+
+    private void ValidateReadinessConfiguration()
+    {
+        if (_options.RequireReadyChunk && !_readback.RequiresReadyChunk)
+        {
+            throw new ArgumentException(
+                "需要 chunk readiness 时，BlockReadbackVerifier 必须启用 RequireReadyChunk。",
+                nameof(_readback));
+        }
     }
 
     public async Task<BlockRangeVerificationResult> VerifyAsync(
@@ -235,8 +263,25 @@ public sealed class BlockRangeVerifier
                     state.LastObservedBlock = observation.BlockId;
                     state.LastReturnedPosition = observation.ReturnedPosition;
                     state.FailureReason = observation.FailureReason;
+                    state.ReadinessStatus = observation.Readiness?.Status;
+                    if (observation.Readiness?.Status == BlockReadinessStatus.Unknown
+                        && state.FailureReason is not null)
+                    {
+                        state.FailureReason += "客户端缓存新鲜度未知；该读回不是服务器权威证明。";
+                    }
+                    else if (observation.Readiness?.Status == BlockReadinessStatus.Ready
+                        && state.FailureReason is not null)
+                    {
+                        state.FailureReason += "chunk 已加载，但该读回仍是 MCC 客户端缓存观察，不是服务器权威 fresh read。";
+                    }
                     if (!observation.IsValid)
                     {
+                        if (observation.ReadinessUnavailable
+                            && round < _options.MaxAttemptsPerSample)
+                        {
+                            continue;
+                        }
+
                         throw Fail(
                             plan,
                             states.Values,
@@ -279,7 +324,7 @@ public sealed class BlockRangeVerifier
             throw Fail(
                 plan,
                 states.Values,
-                $"mcc_world_block_at 调用失败：{exception.Message}",
+                $"MCP 只读调用失败（{exception.Kind}）：{exception.Message}",
                 exception);
         }
         catch (BackendException)
@@ -363,6 +408,7 @@ public sealed class BlockRangeVerifier
         public BlockPosition? LastReturnedPosition { get; set; }
         public string? FailureReason { get; set; }
         public bool Verified { get; set; }
+        public BlockReadinessStatus? ReadinessStatus { get; set; }
 
         public BlockRangeSampleObservation ToObservation() =>
             new(
@@ -371,6 +417,7 @@ public sealed class BlockRangeVerifier
                 LastObservedBlock,
                 LastReturnedPosition,
                 FailureReason,
-                Verified);
+                Verified,
+                ReadinessStatus);
     }
 }

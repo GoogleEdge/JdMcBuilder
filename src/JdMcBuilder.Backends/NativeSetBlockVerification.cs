@@ -6,6 +6,7 @@ namespace JdMcBuilder.Backends;
 public sealed record NativeSetBlockVerificationOptions
 {
     public int MaxAttemptsPerPlacement { get; init; } = 6;
+    public bool RequireReadyChunk { get; init; }
     public TimeSpan OverallTimeout { get; init; } = TimeSpan.FromSeconds(5);
     public TimeSpan InitialDelay { get; init; } = TimeSpan.FromMilliseconds(100);
     public TimeSpan MaximumDelay { get; init; } = TimeSpan.FromMilliseconds(500);
@@ -51,10 +52,36 @@ public sealed record NativeSetBlockVerificationResult(
     BlockPosition Position,
     string ExpectedBlock,
     int Attempts,
-    string ActualBlock)
+    string ActualBlock,
+    BlockPosition? ReturnedPosition = null,
+    BlockReadinessStatus? ReadinessStatus = null,
+    string? FailureReason = null)
 {
-    public string Diagnostic =>
-        $"请求 {Position}：通过，尝试 {Attempts} 次，实际 {ActualBlock}。";
+    public string Diagnostic
+    {
+        get
+        {
+            var readiness = ReadinessStatus switch
+            {
+                BlockReadinessStatus.Ready =>
+                    "；目标 chunk 已加载，但方块值仍来自 MCC 客户端缓存，不是服务器权威 fresh read",
+                BlockReadinessStatus.Unknown =>
+                    "；未获得 chunk readiness，方块值来自 MCC 客户端缓存且新鲜度未知",
+                BlockReadinessStatus.Unavailable =>
+                    "；MCC 客户端缓存当前不可观测",
+                BlockReadinessStatus.Invalid =>
+                    "；chunk readiness 观测无效",
+                _ => string.Empty
+            };
+            var returned = ReturnedPosition is { } position
+                ? $"，返回坐标 {position}"
+                : string.Empty;
+            var failure = string.IsNullOrWhiteSpace(FailureReason)
+                ? string.Empty
+                : $"，原因 {FailureReason}";
+            return $"请求 {Position}：通过，尝试 {Attempts} 次，实际 {ActualBlock}{returned}{readiness}{failure}。";
+        }
+    }
 }
 
 /// <summary>
@@ -72,7 +99,10 @@ public sealed class NativeSetBlockVerifier
         NativeSetBlockVerificationOptions? options = null,
         CommandSafety? safety = null)
         : this(
-            new BlockReadbackVerifier(mcc),
+            new BlockReadbackVerifier(
+                mcc,
+                options?.RequireReadyChunk == true
+                    || mcc.HasTool("mcc_chunk_status")),
             options,
             safety)
     {
@@ -86,6 +116,13 @@ public sealed class NativeSetBlockVerifier
         _readback = readback ?? throw new ArgumentNullException(nameof(readback));
         _options = options ?? new NativeSetBlockVerificationOptions();
         _options.Validate();
+        if (_options.RequireReadyChunk && !_readback.RequiresReadyChunk)
+        {
+            throw new ArgumentException(
+                "需要 chunk readiness 时，BlockReadbackVerifier 必须启用 RequireReadyChunk。",
+                nameof(readback));
+        }
+
         _safety = safety ?? new CommandSafety();
     }
 
@@ -115,23 +152,38 @@ public sealed class NativeSetBlockVerifier
                 // after its cancellation token has been signaled. Never accept
                 // that late observation as proof of a successful mutation.
                 verificationToken.ThrowIfCancellationRequested();
+                lastObservedBlock = observation.BlockId;
                 if (!observation.IsValid)
                 {
+                    if (observation.ReadinessUnavailable
+                        && attempt < _options.MaxAttemptsPerPlacement)
+                    {
+                        await _options.DelayAsync(
+                            GetDelay(attempt),
+                            verificationToken).ConfigureAwait(false);
+                        continue;
+                    }
+
                     throw Fail(
                         position,
                         validatedBlock,
                         attempts,
-                        observation.FailureReason ?? "采样结果无效。 ");
+                        observation.FailureReason ?? "采样结果无效。 ",
+                        lastObservedBlock,
+                        observation.ReturnedPosition,
+                        observation.Readiness?.Status);
                 }
 
-                lastObservedBlock = observation.BlockId;
                 if (observation.Matches(validatedBlock))
                 {
                     return new NativeSetBlockVerificationResult(
                         position,
                         validatedBlock,
                         attempts,
-                        observation.BlockId!);
+                        observation.BlockId!,
+                        observation.ReturnedPosition,
+                        observation.Readiness?.Status,
+                        observation.FailureReason);
                 }
 
                 if (attempt < _options.MaxAttemptsPerPlacement)
@@ -147,7 +199,13 @@ public sealed class NativeSetBlockVerifier
             var reason = cancellationToken.IsCancellationRequested
                 ? "验证被取消"
                 : "验证超过总超时";
-            throw Fail(position, validatedBlock, attempts, reason, lastObservedBlock, exception);
+            throw Fail(
+                position,
+                validatedBlock,
+                attempts,
+                reason,
+                lastObservedBlock,
+                inner: exception);
         }
         catch (McpException exception)
         {
@@ -155,9 +213,9 @@ public sealed class NativeSetBlockVerifier
                 position,
                 validatedBlock,
                 attempts,
-                $"mcc_world_block_at 调用失败：{exception.Message}",
+                $"MCP 只读调用失败（{exception.Kind}）：{exception.Message}",
                 lastObservedBlock,
-                exception);
+                inner: exception);
         }
         catch (BackendException)
         {
@@ -171,7 +229,7 @@ public sealed class NativeSetBlockVerifier
                 attempts,
                 $"采样读取失败：{exception.Message}",
                 lastObservedBlock,
-                exception);
+                inner: exception);
         }
 
         throw Fail(
@@ -202,11 +260,32 @@ public sealed class NativeSetBlockVerifier
         int attempts,
         string reason,
         string? lastObservedBlock = null,
+        BlockPosition? returnedPosition = null,
+        BlockReadinessStatus? readinessStatus = null,
         Exception? inner = null)
     {
         var observed = lastObservedBlock ?? "未解析";
+        var returned = returnedPosition is { } actualPosition
+            ? $"，返回坐标 {actualPosition}"
+            : string.Empty;
+        var readiness = readinessStatus switch
+        {
+            BlockReadinessStatus.Ready =>
+                "；目标 chunk 已加载，但方块值仍来自 MCC 客户端缓存，不是服务器权威 fresh read",
+            BlockReadinessStatus.Unknown =>
+                "；未获得 chunk readiness，无法证明客户端缓存新鲜度",
+            BlockReadinessStatus.Unavailable =>
+                "；MCC 客户端缓存当前不可观测，未执行或未接受方块读取",
+            BlockReadinessStatus.Invalid =>
+                "；chunk readiness 观测无效，未接受方块读取",
+            _ => string.Empty
+        };
+        var cacheCaveat = lastObservedBlock is null
+            ? string.Empty
+            : "（MCC mcc_world_block_at 是客户端缓存观察，不是服务器权威 fresh read）";
         return new BackendException(
-            $"原生 /setblock 独立方块验证失败：{reason}请求 {position}，期望 {expectedBlock}，最后实际 {observed}，尝试 {attempts} 次。",
+            $"原生 /setblock 独立方块验证失败：{reason}请求 {position}，期望 {expectedBlock}，"
+            + $"最后实际 {observed}{returned}{readiness}{cacheCaveat}，尝试 {attempts} 次。",
             uncertain: true,
             inner);
     }

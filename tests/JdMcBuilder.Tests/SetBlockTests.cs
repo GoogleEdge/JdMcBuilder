@@ -206,6 +206,153 @@ public sealed class SetBlockTests
     }
 
     [Fact]
+    public async Task VerifierRetriesUnavailableChunkBeforeReadingBlock()
+    {
+        var calls = new List<string>();
+        var readinessCalls = 0;
+        var tools = ToolSet("mcc_send_chat", "mcc_chunk_status", "mcc_world_block_at");
+        var fake = new FakeMcpToolInvoker(tools, (name, arguments, _) =>
+        {
+            calls.Add(name);
+            var position = name == "mcc_chunk_status" || name == "mcc_world_block_at"
+                ? GetPosition(arguments)
+                : default;
+            if (name == "mcc_chunk_status")
+            {
+                readinessCalls++;
+                return Task.FromResult(Result(new
+                {
+                    location = new { x = position.X, y = position.Y, z = position.Z },
+                    chunk = new { x = position.X >> 4, z = position.Z >> 4 },
+                    loaded = readinessCalls > 1,
+                    fullyLoaded = readinessCalls > 1
+                }));
+            }
+
+            if (name == "mcc_world_block_at")
+            {
+                return Task.FromResult(Result(new
+                {
+                    x = position.X,
+                    y = position.Y,
+                    z = position.Z,
+                    material = "Stone"
+                }));
+            }
+
+            return Task.FromResult(Result(new { success = true }));
+        });
+        var mcc = new MccToolClient(fake);
+        var verifier = new NativeSetBlockVerifier(
+            mcc,
+            new NativeSetBlockVerificationOptions
+            {
+                MaxAttemptsPerPlacement = 2,
+                OverallTimeout = TimeSpan.FromSeconds(1),
+                InitialDelay = TimeSpan.Zero,
+                MaximumDelay = TimeSpan.Zero,
+                DelayAsync = static (_, _) => Task.CompletedTask
+            });
+        var backend = new NativeSetBlockBackend(
+            mcc,
+            verifier,
+            "test-target",
+            BackendStatus.Available,
+            verification: BackendVerification.CreateForTesting("native-setblock"));
+
+        var result = await backend.ExecuteAsync(new ExplicitBlocksBatch(
+            "phase/details/batch-0000",
+            "phase",
+            "details",
+            [new BlockPlacement(new BlockPosition(6, 64, 1), "minecraft:stone")]));
+
+        Assert.True(result.Succeeded);
+        Assert.Equal(1, calls.Count(name => name == "mcc_send_chat"));
+        Assert.Equal(2, calls.Count(name => name == "mcc_chunk_status"));
+        Assert.Equal(1, calls.Count(name => name == "mcc_world_block_at"));
+        Assert.Equal(
+            ["mcc_send_chat", "mcc_chunk_status", "mcc_chunk_status", "mcc_world_block_at"],
+            calls);
+    }
+
+    [Fact]
+    public async Task VerifierRejectsPersistentUnavailableChunkWithoutReadingBlock()
+    {
+        var calls = new List<string>();
+        var tools = ToolSet("mcc_chunk_status", "mcc_world_block_at");
+        var fake = new FakeMcpToolInvoker(tools, (name, arguments, _) =>
+        {
+            calls.Add(name);
+            var position = GetPosition(arguments);
+            return Task.FromResult(name == "mcc_chunk_status"
+                ? Result(new
+                {
+                    location = new { x = position.X, y = position.Y, z = position.Z },
+                    chunk = new { x = position.X >> 4, z = position.Z >> 4 },
+                    loaded = false,
+                    fullyLoaded = false
+                })
+                : Result(new
+                {
+                    x = position.X,
+                    y = position.Y,
+                    z = position.Z,
+                    material = "Stone"
+                }));
+        });
+        var verifier = new NativeSetBlockVerifier(
+            new MccToolClient(fake),
+            new NativeSetBlockVerificationOptions
+            {
+                MaxAttemptsPerPlacement = 2,
+                OverallTimeout = TimeSpan.FromSeconds(1),
+                InitialDelay = TimeSpan.Zero,
+                MaximumDelay = TimeSpan.Zero,
+                DelayAsync = static (_, _) => Task.CompletedTask
+            });
+
+        var exception = await Assert.ThrowsAsync<BackendException>(() => verifier.VerifyAsync(
+            new BlockPosition(6, 64, 1),
+            "minecraft:stone"));
+
+        Assert.True(exception.Uncertain);
+        Assert.Contains("客户端缓存当前不可观测", exception.Message, StringComparison.Ordinal);
+        Assert.Equal(2, calls.Count(name => name == "mcc_chunk_status"));
+        Assert.DoesNotContain("mcc_world_block_at", calls);
+    }
+
+    [Fact]
+    public async Task VerifierReportsWrongCoordinateMaterialInFailure()
+    {
+        var fake = new FakeMcpToolInvoker(
+            ToolSet("mcc_world_block_at"),
+            (_, _, _) => Task.FromResult(Result(new
+            {
+                x = 99,
+                y = 64,
+                z = 1,
+                material = "Dirt"
+            })));
+        var verifier = new NativeSetBlockVerifier(
+            new MccToolClient(fake),
+            new NativeSetBlockVerificationOptions
+            {
+                MaxAttemptsPerPlacement = 1,
+                OverallTimeout = TimeSpan.FromSeconds(1),
+                InitialDelay = TimeSpan.Zero,
+                MaximumDelay = TimeSpan.Zero,
+                DelayAsync = static (_, _) => Task.CompletedTask
+            });
+
+        var exception = await Assert.ThrowsAsync<BackendException>(() => verifier.VerifyAsync(
+            new BlockPosition(6, 64, 1),
+            "minecraft:stone"));
+
+        Assert.Contains("最后实际 minecraft:dirt", exception.Message, StringComparison.Ordinal);
+        Assert.Contains("返回坐标 99 64 1", exception.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public async Task VerifierRejectsLateReadAfterCancellation()
     {
         var readStarted = new TaskCompletionSource<bool>(

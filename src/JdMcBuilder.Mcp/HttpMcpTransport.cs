@@ -192,11 +192,28 @@ public sealed class HttpMcpTransport : IMcpTransport
 
     private void CaptureSessionId(HttpResponseMessage response)
     {
-        if (response.Headers.TryGetValues("Mcp-Session-Id", out var sessionValues)
-            || response.Headers.TryGetValues("MCP-Session-Id", out sessionValues))
+        if (!response.Headers.TryGetValues("Mcp-Session-Id", out var sessionValues)
+            && !response.Headers.TryGetValues("MCP-Session-Id", out sessionValues))
         {
-            SessionId = sessionValues.FirstOrDefault();
+            return;
         }
+
+        var returnedSessionId = sessionValues.FirstOrDefault();
+        if (string.IsNullOrWhiteSpace(returnedSessionId))
+        {
+            return;
+        }
+
+        if (SessionId is not null
+            && !string.Equals(SessionId, returnedSessionId, StringComparison.Ordinal))
+        {
+            InvalidateSession();
+            throw new McpException(
+                McpFailureKind.SessionExpired,
+                "MCP server rotated the session ID during an active connection; operation stopped without replay.");
+        }
+
+        SessionId = returnedSessionId;
     }
 
     private static JsonElement ParseResponseBody(string body, string? contentType)

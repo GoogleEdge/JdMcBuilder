@@ -150,6 +150,77 @@ public sealed class McpTests
     }
 
     [Fact]
+    public void ToolResultExtractsReadyChunkStatus()
+    {
+        var result = new McpToolResult(
+            [],
+            false,
+            JsonSerializer.SerializeToElement(new
+            {
+                success = true,
+                data = new
+                {
+                    location = new { x = 0, y = 64, z = 205 },
+                    chunk = new { x = 0, z = 12 },
+                    loaded = true,
+                    fullyLoaded = true
+                }
+            }));
+
+        Assert.True(result.TryGetChunkStatus(
+            new BlockPosition(0, 64, 205),
+            out var sample));
+        Assert.Equal(0, sample.ChunkX);
+        Assert.Equal(12, sample.ChunkZ);
+        Assert.True(sample.Loaded);
+        Assert.True(sample.FullyLoaded);
+    }
+
+    [Fact]
+    public void ToolResultRejectsUnloadedChunkWithWrongCoordinate()
+    {
+        var result = new McpToolResult(
+            [],
+            false,
+            JsonSerializer.SerializeToElement(new
+            {
+                location = new { x = 48, y = 64, z = 211 },
+                chunk = new { x = 3, z = 13 },
+                loaded = false,
+                fullyLoaded = false
+            }));
+
+        Assert.False(result.TryGetChunkStatus(
+            new BlockPosition(0, 64, 205),
+            out _));
+    }
+
+    [Fact]
+    public void TargetIdentityIgnoresStaleHumanReadableContent()
+    {
+        var mcc = new MccToolClient(new FakeMcpToolInvoker(
+            new Dictionary<string, McpToolDefinition>(),
+            (_, _, _) => throw new InvalidOperationException("No calls expected.")));
+        var session = new McpToolResult(
+            [JsonSerializer.SerializeToElement(new
+            {
+                type = "text",
+                text = "{\"sessionId\":\"stale\"}"
+            })],
+            false,
+            JsonSerializer.SerializeToElement(new { sessionId = "current" }));
+        var world = new McpToolResult(
+            [],
+            false,
+            JsonSerializer.SerializeToElement(new { worldId = "campus", dimension = "overworld" }));
+
+        var fingerprint = TargetFingerprintBuilder.Create(mcc, session, world);
+
+        Assert.NotEmpty(fingerprint);
+        Assert.DoesNotContain("stale", fingerprint, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void ToolResultExtractsMccSampleCoordinates()
     {
         var result = new McpToolResult(

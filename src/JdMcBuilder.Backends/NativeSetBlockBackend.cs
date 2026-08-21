@@ -74,6 +74,7 @@ public sealed class NativeSetBlockBackend : IBuildBackend
             .ToArray();
         var calls = new List<string>(commands.Length);
         var mutationDispatched = false;
+        NativeSetBlockVerificationResult? lastVerification = null;
         try
         {
             for (var index = 0; index < blocks.Blocks.Count; index++)
@@ -92,17 +93,21 @@ public sealed class NativeSetBlockBackend : IBuildBackend
                 calls.Add($"mcc_send_chat({command})");
                 // The send response, including a human-readable "changed block"
                 // message, is diagnostic only. Fresh world sampling is proof.
-                await _verifier.VerifyAsync(
+                var verification = await _verifier.VerifyAsync(
                     placement.Position,
                     placement.Block,
                     cancellationToken).ConfigureAwait(false);
+                lastVerification = verification;
             }
 
             return new BackendOperationResult(
                 batch.BatchId,
                 true,
                 false,
-                "/setblock 已逐点发送并完成独立方块验证。",
+                "/setblock 已逐点发送并完成独立方块验证。"
+                    + (lastVerification is null
+                        ? string.Empty
+                        : $"{Environment.NewLine}{lastVerification.Diagnostic}"),
                 batch.BlockCount,
                 calls);
         }

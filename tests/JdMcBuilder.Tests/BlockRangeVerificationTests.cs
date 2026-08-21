@@ -64,6 +64,123 @@ public sealed class BlockRangeVerificationTests
     }
 
     [Fact]
+    public async Task VerifierDoesNotReadUnloadedChunkAsAir()
+    {
+        var calls = new List<string>();
+        var fake = new FakeMcpToolInvoker(
+            Tools("mcc_world_block_at", "mcc_chunk_status"),
+            (name, arguments, _) =>
+            {
+                calls.Add(name);
+                var position = Position(arguments);
+                return Task.FromResult(name == "mcc_chunk_status"
+                    ? Result(new
+                    {
+                        location = new { x = position.X, y = position.Y, z = position.Z },
+                        chunk = new { x = position.X >> 4, z = position.Z >> 4 },
+                        loaded = false,
+                        fullyLoaded = false
+                    })
+                    : Result(new
+                    {
+                        x = position.X,
+                        y = position.Y,
+                        z = position.Z,
+                        material = "Air"
+                    }));
+            });
+        var verifier = new BlockRangeVerifier(
+            new MccToolClient(fake),
+            new BlockRangeVerificationOptions
+            {
+                MaxAttemptsPerSample = 2,
+                OverallTimeout = TimeSpan.FromSeconds(1),
+                InitialDelay = TimeSpan.Zero,
+                MaximumDelay = TimeSpan.Zero,
+                DelayAsync = static (_, _) => Task.CompletedTask
+            });
+
+        var exception = await Assert.ThrowsAnyAsync<BackendException>(() =>
+            verifier.VerifyAsync(Plan(0, 64, 205, 0, 64, 205)));
+
+        Assert.True(exception.Uncertain);
+        Assert.Contains("尚未完全加载", exception.Message, StringComparison.Ordinal);
+        Assert.DoesNotContain("mcc_world_block_at", calls);
+        Assert.Equal(2, calls.Count(name => name == "mcc_chunk_status"));
+    }
+
+    [Fact]
+    public async Task VerifierReadsBlockAfterReadyChunkStatus()
+    {
+        var calls = new List<string>();
+        var fake = new FakeMcpToolInvoker(
+            Tools("mcc_world_block_at", "mcc_chunk_status"),
+            (name, arguments, _) =>
+            {
+                calls.Add(name);
+                var position = Position(arguments);
+                return Task.FromResult(name == "mcc_chunk_status"
+                    ? Result(new
+                    {
+                        location = new { x = position.X, y = position.Y, z = position.Z },
+                        chunk = new { x = position.X >> 4, z = position.Z >> 4 },
+                        loaded = true,
+                        fullyLoaded = true
+                    })
+                    : Result(new
+                    {
+                        x = position.X,
+                        y = position.Y,
+                        z = position.Z,
+                        material = "GrayConcrete"
+                    }));
+            });
+        var verifier = new BlockRangeVerifier(
+            new MccToolClient(fake),
+            new BlockRangeVerificationOptions
+            {
+                MaxAttemptsPerSample = 1,
+                OverallTimeout = TimeSpan.FromSeconds(1),
+                InitialDelay = TimeSpan.Zero,
+                MaximumDelay = TimeSpan.Zero,
+                DelayAsync = static (_, _) => Task.CompletedTask
+            });
+
+        var result = await verifier.VerifyAsync(Plan(0, 64, 205, 0, 64, 205));
+
+        Assert.True(result.Verified);
+        Assert.Equal(["mcc_chunk_status", "mcc_world_block_at"], calls);
+    }
+
+    [Fact]
+    public async Task VerifierKeepsCompatibilityWhenChunkStatusToolIsMissing()
+    {
+        var calls = new List<string>();
+        var fake = new FakeMcpToolInvoker(
+            Tools("mcc_world_block_at"),
+            (name, arguments, _) =>
+            {
+                calls.Add(name);
+                var position = Position(arguments);
+                return Task.FromResult(Result(new
+                {
+                    x = position.X,
+                    y = position.Y,
+                    z = position.Z,
+                    material = "GrayConcrete"
+                }));
+            });
+        var verifier = new BlockRangeVerifier(
+            new MccToolClient(fake),
+            FastOptions());
+
+        var result = await verifier.VerifyAsync(Plan(0, 64, 205, 0, 64, 205));
+
+        Assert.True(result.Verified);
+        Assert.Equal(["mcc_world_block_at"], calls);
+    }
+
+    [Fact]
     public async Task VerifierRejectsWrongReturnedCoordinate()
     {
         var fake = new FakeMcpToolInvoker(
@@ -108,14 +225,20 @@ public sealed class BlockRangeVerificationTests
         DelayAsync = static (_, _) => Task.CompletedTask
     };
 
-    private static IReadOnlyDictionary<string, McpToolDefinition> Tools() =>
-        new Dictionary<string, McpToolDefinition>(StringComparer.Ordinal)
-        {
-            ["mcc_world_block_at"] = new(
-                "mcc_world_block_at",
+    private static IReadOnlyDictionary<string, McpToolDefinition> Tools(
+        params string[] names)
+    {
+        var selected = names.Length == 0
+            ? ["mcc_world_block_at"]
+            : names;
+        return selected.ToDictionary(
+            name => name,
+            name => new McpToolDefinition(
+                name,
                 null,
-                JsonSerializer.SerializeToElement(new { type = "object" }))
-        };
+                JsonSerializer.SerializeToElement(new { type = "object" })),
+            StringComparer.Ordinal);
+    }
 
     private static BlockPosition Position(object? arguments)
     {

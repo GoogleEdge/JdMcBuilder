@@ -301,12 +301,20 @@ public partial class MainWindow : Window
             return;
         }
 
-        var readback = new BlockReadbackVerifier(mcc);
+        var requireReadyChunk = mcc.HasTool("mcc_chunk_status");
+        var readback = new BlockReadbackVerifier(
+            mcc,
+            requireReadyChunk);
         var worldEditVerifier = new WorldEditVerifier(readback);
         var rangeVerifier = new Func<BlockRange, string, CancellationToken, Task<BlockRangeVerificationResult>>(
             (range, expectedBlock, cancellationToken) =>
                 worldEditVerifier.VerifyAsync(range, expectedBlock, cancellationToken));
-        var nativeSetBlockVerifier = new NativeSetBlockVerifier(mcc);
+        var nativeSetBlockVerifier = new NativeSetBlockVerifier(
+            readback,
+            new NativeSetBlockVerificationOptions
+            {
+                RequireReadyChunk = requireReadyChunk
+            });
         var worldEditVerification = _backendProbeReport?.Find("worldedit")?.Verification;
         var nativeFillVerification = _backendProbeReport?.Find("native-fill")?.Verification;
         var setBlockVerification = _backendProbeReport?.Find("native-setblock")?.Verification;
@@ -317,7 +325,11 @@ public partial class MainWindow : Window
             verification: worldEditVerification);
         var nativeFill = new NativeFillBackend(
             mcc,
-            status: nativeFillStatus,
+            new NativeFillVerificationOptions
+            {
+                RequireReadyChunk = requireReadyChunk
+            },
+            nativeFillStatus,
             verification: nativeFillVerification);
         var setBlock = new NativeSetBlockBackend(
             mcc,
@@ -671,8 +683,8 @@ public partial class MainWindow : Window
                 + $"计划范围：{plan.Range}\n"
                 + $"期望方块：{plan.ExpectedBlock}\n"
                 + $"角点：{string.Join(", ", plan.SamplePositions)}\n\n"
-                + "此操作只读取 session/world/server identity 和 mcc_world_block_at；"
-                + "不会发送聊天、//pos、//set、/fill、/setblock，不会归档或自动继续施工。\n"
+                + "此操作只读取 session/world/server identity、可选 mcc_chunk_status 和 mcc_world_block_at；"
+                + "mcc_chunk_status 未加载时不会读取方块；不会发送聊天、//pos、//set、/fill、/setblock，不会归档或自动继续施工。\n"
                 + "角点抽样不是对区域内部每个方块的完整证明。是否继续？";
             if (MessageBox.Show(
                     prompt,

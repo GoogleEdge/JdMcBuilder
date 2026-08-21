@@ -128,6 +128,16 @@ public sealed class BuildRecoveryService
             }
             catch (BlockRangeVerificationException exception)
             {
+                if (FindFailureKind(exception) == McpFailureKind.SessionExpired)
+                {
+                    return new BuildRecoveryResult(
+                        BuildRecoveryStatus.ConnectionChanged,
+                        request.BatchId,
+                        $"MCP session/context 已失效；丢弃角点证据且 journal 未改变。{Environment.NewLine}{exception.Message}",
+                        InitialTargetFingerprint: initialFingerprint,
+                        Verification: exception.Result);
+                }
+
                 return new BuildRecoveryResult(
                     BuildRecoveryStatus.VerificationFailed,
                     request.BatchId,
@@ -239,8 +249,23 @@ public sealed class BuildRecoveryService
                 request.BatchId,
                 "不确定批次核验已取消；journal 未改变。 ");
         }
+        catch (McpException exception) when (exception.Kind == McpFailureKind.SessionExpired)
+        {
+            return Reject(
+                BuildRecoveryStatus.ConnectionChanged,
+                request.BatchId,
+                $"MCP session/context 已失效；journal 未改变：{exception.Message}");
+        }
         catch (BackendException exception)
         {
+            if (FindFailureKind(exception) == McpFailureKind.SessionExpired)
+            {
+                return Reject(
+                    BuildRecoveryStatus.ConnectionChanged,
+                    request.BatchId,
+                    $"MCP session/context 已失效；journal 未改变：{exception.Message}");
+            }
+
             return Reject(
                 BuildRecoveryStatus.VerificationFailed,
                 request.BatchId,
@@ -289,9 +314,9 @@ public sealed class BuildRecoveryService
             || string.IsNullOrWhiteSpace(state.BlueprintHash)
             || string.IsNullOrWhiteSpace(state.BackendId)
             || string.IsNullOrWhiteSpace(state.TargetFingerprint)
-            || !string.Equals(state.BackendId, "worldedit", StringComparison.Ordinal))
+            || state.BackendId is not ("worldedit" or "native-fill"))
         {
-            rejection = "journal 缺少 revision/session/hash/backend/target identity，或 uncertain batch 并非由 WorldEdit 后端记录；未修改 journal。 ";
+            rejection = "journal 缺少 revision/session/hash/backend/target identity，或 uncertain batch 不是由支持范围核验的 WorldEdit/native-fill 后端记录；未修改 journal。 ";
             return false;
         }
 
@@ -424,6 +449,19 @@ public sealed class BuildRecoveryService
 
         error = string.Empty;
         return true;
+    }
+
+    private static McpFailureKind? FindFailureKind(Exception exception)
+    {
+        for (var current = exception; current is not null; current = current.InnerException)
+        {
+            if (current is McpException mcp)
+            {
+                return mcp.Kind;
+            }
+        }
+
+        return null;
     }
 
     private static BuildRecoveryResult Reject(

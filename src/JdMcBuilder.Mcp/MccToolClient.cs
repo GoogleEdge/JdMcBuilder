@@ -12,6 +12,18 @@ public sealed class MccToolClient
     public IReadOnlyDictionary<string, McpToolDefinition> Tools => _invoker.Tools;
     public Uri? Endpoint => (_invoker as McpClient)?.Endpoint;
     public string? SessionId => (_invoker as McpClient)?.SessionId;
+    public string? ContextFingerprint =>
+        SessionId is { Length: > 0 } sessionId
+            ? CreateContextFingerprint(Endpoint, sessionId)
+            : null;
+
+    private static string CreateContextFingerprint(Uri? endpoint, string sessionId)
+    {
+        var endpointText = endpoint?.GetLeftPart(UriPartial.Path) ?? "unknown-endpoint";
+        var bytes = System.Security.Cryptography.SHA256.HashData(
+            System.Text.Encoding.UTF8.GetBytes($"{endpointText}\n{sessionId}"));
+        return $"sha256:{Convert.ToHexString(bytes).ToLowerInvariant()}";
+    }
 
     public Task<McpToolResult> SessionStatusAsync(CancellationToken cancellationToken = default) => CallAsync("mcc_session_status", new { }, cancellationToken);
     public Task<McpToolResult> WorldStateAsync(CancellationToken cancellationToken = default) => CallAsync("mcc_world_state", new { }, cancellationToken);

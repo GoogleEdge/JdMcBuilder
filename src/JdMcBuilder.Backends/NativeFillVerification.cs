@@ -6,6 +6,7 @@ namespace JdMcBuilder.Backends;
 public sealed record NativeFillVerificationOptions
 {
     public int MaxAttemptsPerSample { get; init; } = 6;
+    public bool RequireReadyChunk { get; init; }
     public TimeSpan OverallTimeout { get; init; } = TimeSpan.FromSeconds(5);
     public TimeSpan InitialDelay { get; init; } = TimeSpan.FromMilliseconds(100);
     public TimeSpan MaximumDelay { get; init; } = TimeSpan.FromMilliseconds(500);
@@ -20,7 +21,8 @@ public sealed record NativeFillVerificationOptions
             OverallTimeout = OverallTimeout,
             InitialDelay = InitialDelay,
             MaximumDelay = MaximumDelay,
-            DelayAsync = DelayAsync
+            DelayAsync = DelayAsync,
+            RequireReadyChunk = RequireReadyChunk
         };
         options.Validate();
         return options;
@@ -73,7 +75,9 @@ public sealed record NativeFillSampleObservation(
     int Attempts,
     string? LastObservedBlock,
     BlockPosition? LastReturnedPosition,
-    bool Verified)
+    bool Verified,
+    string? FailureReason = null,
+    BlockReadinessStatus? ReadinessStatus = null)
 {
     public override string ToString()
     {
@@ -81,8 +85,23 @@ public sealed record NativeFillSampleObservation(
         var returned = LastReturnedPosition is { } position
             ? $"，返回坐标 {position}"
             : string.Empty;
+        var readiness = ReadinessStatus switch
+        {
+            BlockReadinessStatus.Ready =>
+                "；目标 chunk 已加载，但方块值仍来自 MCC 客户端缓存，不是服务器权威 fresh read",
+            BlockReadinessStatus.Unknown =>
+                "；未获得 chunk readiness，方块值来自 MCC 客户端缓存且新鲜度未知",
+            BlockReadinessStatus.Unavailable =>
+                "；MCC 客户端缓存当前不可观测",
+            BlockReadinessStatus.Invalid =>
+                "；chunk readiness 观测无效",
+            _ => string.Empty
+        };
+        var failure = string.IsNullOrWhiteSpace(FailureReason)
+            ? string.Empty
+            : $"，原因 {FailureReason}";
         var status = Verified ? "通过" : "未通过";
-        return $"请求 {RequestedPosition}：{status}，尝试 {Attempts} 次，实际 {actual}{returned}";
+        return $"请求 {RequestedPosition}：{status}，尝试 {Attempts} 次，实际 {actual}{returned}{readiness}{failure}";
     }
 }
 
@@ -106,7 +125,13 @@ public sealed class NativeFillVerifier
         ArgumentNullException.ThrowIfNull(mcc);
         var configured = options ?? new NativeFillVerificationOptions();
         _rangeVerifier = readback is null
-            ? new BlockRangeVerifier(mcc, configured.ToRangeOptions())
+            ? new BlockRangeVerifier(
+                mcc,
+                (configured with
+                {
+                    RequireReadyChunk = configured.RequireReadyChunk
+                        || mcc.HasTool("mcc_chunk_status")
+                }).ToRangeOptions())
             : new BlockRangeVerifier(readback, configured.ToRangeOptions());
     }
 
@@ -134,7 +159,9 @@ public sealed class NativeFillVerifier
                     item.Attempts,
                     item.LastObservedBlock,
                     item.LastReturnedPosition,
-                    item.Verified)).ToArray());
+                    item.Verified,
+                    item.FailureReason,
+                    item.ReadinessStatus)).ToArray());
         }
         catch (BackendException exception) when (exception.Uncertain)
         {

@@ -22,6 +22,13 @@ public sealed record McpToolDefinition(
     string? Description,
     JsonElement InputSchema);
 
+public sealed record McpChunkStatusSample(
+    BlockPosition ReturnedPosition,
+    int ChunkX,
+    int ChunkZ,
+    bool Loaded,
+    bool FullyLoaded);
+
 public sealed record McpToolResult(
     IReadOnlyList<JsonElement> Content,
     bool IsError,
@@ -162,6 +169,35 @@ public sealed record McpToolResult(
         return true;
     }
 
+    public bool TryGetChunkStatus(
+        BlockPosition requestedPosition,
+        out McpChunkStatusSample sample)
+    {
+        var candidates = new List<McpChunkStatusSample>();
+        foreach (var payload in EnumeratePayloads())
+        {
+            CollectChunkStatuses(payload, null, candidates, allowJsonText: false);
+        }
+
+        foreach (var item in Content)
+        {
+            CollectChunkStatuses(item, null, candidates, allowJsonText: true);
+        }
+
+        if (candidates.Count == 0
+            || candidates.Any(item => item.ReturnedPosition != requestedPosition)
+            || candidates.Any(item => item.ChunkX != (requestedPosition.X >> 4)
+                || item.ChunkZ != (requestedPosition.Z >> 4))
+            || candidates.Any(item => item != candidates[0]))
+        {
+            sample = default!;
+            return false;
+        }
+
+        sample = candidates[0];
+        return true;
+    }
+
     public bool TryGetString(out string value, params string[] propertyNames)
     {
         ArgumentNullException.ThrowIfNull(propertyNames);
@@ -182,6 +218,41 @@ public sealed record McpToolResult(
 
         value = string.Empty;
         return false;
+    }
+
+    public bool TryGetMachineString(out string value, params string[] propertyNames)
+    {
+        ArgumentNullException.ThrowIfNull(propertyNames);
+        if (propertyNames.Length == 0)
+        {
+            value = string.Empty;
+            return false;
+        }
+
+        var names = propertyNames.ToHashSet(StringComparer.OrdinalIgnoreCase);
+        foreach (var item in EnumerateMachinePayloads())
+        {
+            if (TryFindMachineString(item, names, out value))
+            {
+                return true;
+            }
+        }
+
+        value = string.Empty;
+        return false;
+    }
+
+    private IEnumerable<JsonElement> EnumerateMachinePayloads()
+    {
+        if (StructuredContent is { } structured)
+        {
+            yield return structured;
+        }
+
+        if (RawResult is { } raw)
+        {
+            yield return raw;
+        }
     }
 
     private IEnumerable<JsonElement> EnumeratePayloads()
@@ -217,6 +288,195 @@ public sealed record McpToolResult(
             "selected_item",
             "handItem",
             "hand_item");
+
+    private static void CollectChunkStatuses(
+        JsonElement element,
+        BlockPosition? inheritedPosition,
+        ICollection<McpChunkStatusSample> candidates,
+        bool allowJsonText)
+    {
+        switch (element.ValueKind)
+        {
+            case JsonValueKind.Object:
+                var position = TryGetPosition(element, out var directPosition)
+                    ? directPosition
+                    : TryGetNamedPosition(element, "location", out var namedPosition)
+                        ? namedPosition
+                        : inheritedPosition;
+                if (position is { } boundPosition
+                    && TryGetChunkCoordinates(element, out var chunkX, out var chunkZ)
+                    && TryGetBoolean(element, "loaded", out var loaded)
+                    && TryGetBoolean(element, "fullyLoaded", out var fullyLoaded))
+                {
+                    candidates.Add(new McpChunkStatusSample(
+                        boundPosition,
+                        chunkX,
+                        chunkZ,
+                        loaded,
+                        fullyLoaded));
+                }
+
+                foreach (var property in element.EnumerateObject())
+                {
+                    CollectChunkStatuses(
+                        property.Value,
+                        position,
+                        candidates,
+                        allowJsonText);
+                }
+
+                break;
+            case JsonValueKind.Array:
+                foreach (var item in element.EnumerateArray())
+                {
+                    CollectChunkStatuses(item, inheritedPosition, candidates, allowJsonText);
+                }
+
+                break;
+            case JsonValueKind.String when allowJsonText:
+                var text = element.GetString();
+                if (!string.IsNullOrWhiteSpace(text)
+                    && text.TrimStart().StartsWith("{", StringComparison.Ordinal))
+                {
+                    try
+                    {
+                        using var document = JsonDocument.Parse(text);
+                        CollectChunkStatuses(document.RootElement, null, candidates, true);
+                    }
+                    catch (JsonException)
+                    {
+                        // Content text is not necessarily JSON.
+                    }
+                }
+
+                break;
+        }
+    }
+
+    private static bool TryGetNamedPosition(
+        JsonElement element,
+        string propertyName,
+        out BlockPosition position)
+    {
+        if (element.TryGetProperty(propertyName, out var value)
+            && TryGetPosition(value, out position))
+        {
+            return true;
+        }
+
+        foreach (var property in element.EnumerateObject())
+        {
+            if (property.Name.Equals(propertyName, StringComparison.OrdinalIgnoreCase)
+                && TryGetPosition(property.Value, out position))
+            {
+                return true;
+            }
+        }
+
+        position = default;
+        return false;
+    }
+
+    private static bool TryGetChunkCoordinates(
+        JsonElement element,
+        out int chunkX,
+        out int chunkZ)
+    {
+        if (TryGetInt32(element, "chunkX", out chunkX)
+            && TryGetInt32(element, "chunkZ", out chunkZ))
+        {
+            return true;
+        }
+
+        if (element.TryGetProperty("chunk", out var chunk)
+            && TryGetInt32(chunk, "x", out chunkX)
+            && TryGetInt32(chunk, "z", out chunkZ))
+        {
+            return true;
+        }
+
+        foreach (var property in element.EnumerateObject())
+        {
+            if (property.Name.Equals("chunk", StringComparison.OrdinalIgnoreCase)
+                && TryGetInt32(property.Value, "x", out chunkX)
+                && TryGetInt32(property.Value, "z", out chunkZ))
+            {
+                return true;
+            }
+        }
+
+        chunkX = default;
+        chunkZ = default;
+        return false;
+    }
+
+    private static bool TryGetBoolean(
+        JsonElement element,
+        string propertyName,
+        out bool value)
+    {
+        if (element.TryGetProperty(propertyName, out var property)
+            && property.ValueKind is JsonValueKind.True or JsonValueKind.False)
+        {
+            value = property.GetBoolean();
+            return true;
+        }
+
+        foreach (var candidate in element.EnumerateObject())
+        {
+            if (candidate.Name.Equals(propertyName, StringComparison.OrdinalIgnoreCase)
+                && candidate.Value.ValueKind is JsonValueKind.True or JsonValueKind.False)
+            {
+                value = candidate.Value.GetBoolean();
+                return true;
+            }
+        }
+
+        value = default;
+        return false;
+    }
+
+    private static bool TryFindMachineString(
+        JsonElement element,
+        IReadOnlySet<string> propertyNames,
+        out string value)
+    {
+        switch (element.ValueKind)
+        {
+            case JsonValueKind.Object:
+                foreach (var property in element.EnumerateObject())
+                {
+                    if (propertyNames.Contains(property.Name)
+                        && property.Value.ValueKind == JsonValueKind.String
+                        && !string.IsNullOrWhiteSpace(property.Value.GetString()))
+                    {
+                        value = property.Value.GetString()!;
+                        return true;
+                    }
+
+                    if (!IsHumanReadableProperty(property.Name)
+                        && TryFindMachineString(property.Value, propertyNames, out value))
+                    {
+                        return true;
+                    }
+                }
+
+                break;
+            case JsonValueKind.Array:
+                foreach (var item in element.EnumerateArray())
+                {
+                    if (TryFindMachineString(item, propertyNames, out value))
+                    {
+                        return true;
+                    }
+                }
+
+                break;
+        }
+
+        value = string.Empty;
+        return false;
+    }
 
     private static bool TryFindString(
         JsonElement element,

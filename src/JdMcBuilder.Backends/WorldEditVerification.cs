@@ -6,6 +6,7 @@ namespace JdMcBuilder.Backends;
 public sealed record WorldEditVerificationOptions
 {
     public int MaxAttempts { get; init; } = 6;
+    public bool RequireReadyChunk { get; init; }
     public TimeSpan OverallTimeout { get; init; } = TimeSpan.FromSeconds(5);
     public TimeSpan InitialDelay { get; init; } = TimeSpan.FromMilliseconds(100);
     public TimeSpan MaximumDelay { get; init; } = TimeSpan.FromMilliseconds(500);
@@ -20,7 +21,8 @@ public sealed record WorldEditVerificationOptions
             OverallTimeout = OverallTimeout,
             InitialDelay = InitialDelay,
             MaximumDelay = MaximumDelay,
-            DelayAsync = DelayAsync
+            DelayAsync = DelayAsync,
+            RequireReadyChunk = RequireReadyChunk
         };
         options.Validate();
         return options;
@@ -43,7 +45,10 @@ public sealed class WorldEditVerifier
         WorldEditVerificationOptions? options = null,
         CommandSafety? safety = null)
         : this(
-            new BlockReadbackVerifier(mcc),
+            new BlockReadbackVerifier(
+                mcc,
+                options?.RequireReadyChunk == true
+                    || mcc.HasTool("mcc_chunk_status")),
             options,
             safety)
     {

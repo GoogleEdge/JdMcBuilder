@@ -212,6 +212,23 @@ public sealed class ProbeTests
     }
 
     [Fact]
+    public void TargetFingerprintRequiresTransportSessionForRealMcpClient()
+    {
+        var mcc = new MccToolClient(
+            new McpClient(
+                new NoSessionTransport(),
+                new McpConnectionOptions()));
+
+        var exception = Assert.Throws<BackendException>(() =>
+            TargetFingerprintBuilder.Create(
+                mcc,
+                Result(new { host = "localhost", port = 25565 }),
+                Result(new { dimension = "minecraft:overworld" })));
+
+        Assert.Contains("session context", exception.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void TargetFingerprintChangesWithStableWorldIdentity()
     {
         var mcc = new MccToolClient(new FakeMcpToolInvoker(
@@ -523,6 +540,28 @@ public sealed class ProbeTests
             element.GetProperty("x").GetInt32(),
             element.GetProperty("y").GetInt32(),
             element.GetProperty("z").GetInt32());
+    }
+
+    private sealed class NoSessionTransport : IMcpTransport
+    {
+        public string? SessionId => null;
+
+        public Task ConnectAsync(CancellationToken cancellationToken = default) =>
+            Task.CompletedTask;
+
+        public Task<JsonElement?> SendRequestAsync(
+            string method,
+            object? parameters,
+            CancellationToken cancellationToken = default) =>
+            Task.FromResult<JsonElement?>(JsonSerializer.SerializeToElement(new { }));
+
+        public Task SendNotificationAsync(
+            string method,
+            object? parameters,
+            CancellationToken cancellationToken = default) =>
+            Task.CompletedTask;
+
+        public ValueTask DisposeAsync() => ValueTask.CompletedTask;
     }
 
     private static McpToolResult Result<T>(T value) =>
